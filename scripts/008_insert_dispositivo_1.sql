@@ -1,0 +1,2 @@
+-- Este archivo ya no es necesario, todo está en el script 004
+-- Marcado para eliminación
