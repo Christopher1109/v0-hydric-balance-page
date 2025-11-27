@@ -1,230 +1,246 @@
 "use client"
 
-import type React from "react"
-
-import { useState, useEffect } from "react"
+import { useEffect, useState, FormEvent } from "react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogTrigger,
+  DialogFooter,
+  DialogClose,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { UserPlus } from "lucide-react"
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select"
 import { createClient } from "@/lib/supabase/client"
-import type { Dispositivo } from "@/lib/types"
 
 interface NuevoPacienteDialogProps {
-  onPacienteCreado: () => void
+  onPacienteCreado?: () => void | Promise<void>
+}
+
+interface DispositivoOption {
+  id: number
+  nombre: string
 }
 
 export function NuevoPacienteDialog({ onPacienteCreado }: NuevoPacienteDialogProps) {
-  const [open, setOpen] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const [dispositivos, setDispositivos] = useState<Dispositivo[]>([])
-  const [formData, setFormData] = useState({
-    nombre: "",
-    edad: "",
-    peso: "",
-    talla: "",
-    genero: "",
-    dispositivo_id: "",
-  })
-
   const supabase = createClient()
 
+  const [open, setOpen] = useState(false)
+  const [nombre, setNombre] = useState("")
+  const [edad, setEdad] = useState("")
+  const [peso, setPeso] = useState("")
+  const [talla, setTalla] = useState("")
+  const [sexo, setSexo] = useState<"M" | "F" | "">("")
+  const [dispositivoId, setDispositivoId] = useState<string>("")
+  const [dispositivos, setDispositivos] = useState<DispositivoOption[]>([])
+  const [guardando, setGuardando] = useState(false)
+
+  // IMC calculado en vivo
+  const pesoNum = Number(peso) || 0
+  const tallaNum = Number(talla) || 0
+  const imc =
+    pesoNum > 0 && tallaNum > 0 ? Number((pesoNum / Math.pow(tallaNum / 100, 2)).toFixed(2)) : 0
+
+  // Cargar dispositivos activos para el select
   useEffect(() => {
-    if (open) {
-      cargarDispositivos()
+    const cargarDispositivos = async () => {
+      const { data, error } = await supabase
+        .from("dispositivos")
+        .select("id, nombre")
+        .eq("activo", true)
+        .order("id", { ascending: true })
+
+      if (error) {
+        console.error("[v0] Error al cargar dispositivos:", error)
+        return
+      }
+
+      setDispositivos(data ?? [])
     }
-  }, [open])
 
-  const cargarDispositivos = async () => {
-    console.log("[v0] Cargando dispositivos...")
-    const { data, error } = await supabase.from("dispositivos").select("*").eq("activo", true).order("id")
+    cargarDispositivos()
+  }, [supabase])
 
-    if (error) {
-      console.error("[v0] Error al cargar dispositivos:", error)
+  const resetForm = () => {
+    setNombre("")
+    setEdad("")
+    setPeso("")
+    setTalla("")
+    setSexo("")
+    setDispositivoId("")
+  }
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!nombre || !edad || !peso || !talla) {
+      alert("Por favor completa nombre, edad, peso y talla.")
       return
     }
 
-    console.log("[v0] Dispositivos cargados:", data)
-    setDispositivos(data || [])
-  }
-
-  const calcularIMC = (peso: number, talla: number) => {
-    const tallaMetros = talla / 100
-    return peso / (tallaMetros * tallaMetros)
-  }
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
-
     try {
-      const peso = Number.parseFloat(formData.peso)
-      const talla = Number.parseFloat(formData.talla)
+      setGuardando(true)
 
-      console.log("[v0] Intentando crear paciente con dispositivo_id:", formData.dispositivo_id)
+      const edadNum = Number(edad) || 0
 
-      const { data, error } = await supabase
-        .from("pacientes")
-        .insert({
-          nombre: formData.nombre,
-          edad: Number.parseInt(formData.edad),
-          peso: peso,
-          talla: talla,
-          genero: formData.genero,
-          dispositivo_id: Number.parseInt(formData.dispositivo_id),
-        })
-        .select()
+      const { error } = await supabase.from("pacientes").insert({
+        // 👇👇  IMPORTANTE: columnas reales de la tabla
+        nombre,
+        edad_anios: edadNum,
+        peso_kg: pesoNum,
+        talla_cm: tallaNum,
+        imc,
+        sexo,
+        dispositivo_id: dispositivoId ? Number(dispositivoId) : null,
+        // created_at se asume con DEFAULT now() en la BD
+      })
 
       if (error) {
         console.error("[v0] Error al crear paciente:", error)
-        throw error
+        alert("Error al crear el paciente. Por favor intenta de nuevo.")
+        return
       }
 
-      console.log("[v0] Paciente creado exitosamente:", data)
+      if (onPacienteCreado) {
+        await onPacienteCreado()
+      }
 
-      setFormData({ nombre: "", edad: "", peso: "", talla: "", genero: "", dispositivo_id: "" })
+      resetForm()
       setOpen(false)
-
-      // Esperar un momento para que el diálogo se cierre visualmente antes de recargar
-      setTimeout(() => {
-        onPacienteCreado()
-      }, 100)
-    } catch (error) {
-      console.error("[v0] Error en handleSubmit:", error)
+    } catch (err) {
+      console.error("[v0] Error en handleSubmit:", err)
       alert("Error al crear el paciente. Por favor intenta de nuevo.")
     } finally {
-      setLoading(false)
+      setGuardando(false)
     }
   }
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button size="lg" className="gap-2">
-          <UserPlus className="h-5 w-5" />
-          Nuevo Paciente
-        </Button>
+        <Button size="sm">Nuevo Paciente</Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[500px]">
+      <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>Registrar Nuevo Paciente</DialogTitle>
-            <DialogDescription>Ingresa los datos del paciente para crear su registro de monitoreo.</DialogDescription>
+            <DialogDescription>
+              Ingresa los datos del paciente para crear su registro de monitoreo.
+            </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <div className="grid gap-2">
-              <Label htmlFor="nombre">Nombre del paciente</Label>
+
+          <div className="mt-4 space-y-4">
+            <div className="space-y-2">
+              <Label>Nombre del paciente</Label>
               <Input
-                id="nombre"
-                value={formData.nombre}
-                onChange={(e) => setFormData({ ...formData, nombre: e.target.value })}
-                placeholder="Ej: Juan Pérez"
-                required
+                value={nombre}
+                onChange={(e) => setNombre(e.target.value)}
+                placeholder="Nombre completo"
               />
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="edad">Edad (años)</Label>
-              <Input
-                id="edad"
-                type="number"
-                value={formData.edad}
-                onChange={(e) => setFormData({ ...formData, edad: e.target.value })}
-                placeholder="Ej: 45"
-                min="0"
-                max="150"
-                required
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="peso">Peso (kg)</Label>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Edad (años)</Label>
                 <Input
-                  id="peso"
                   type="number"
-                  step="0.1"
-                  value={formData.peso}
-                  onChange={(e) => setFormData({ ...formData, peso: e.target.value })}
-                  placeholder="Ej: 70.5"
-                  min="0"
-                  required
+                  min={0}
+                  value={edad}
+                  onChange={(e) => setEdad(e.target.value)}
+                  placeholder="Ej. 45"
                 />
               </div>
-              <div className="grid gap-2">
-                <Label htmlFor="talla">Talla (cm)</Label>
+              <div className="space-y-2">
+                <Label>Sexo</Label>
+                <Select
+                  value={sexo}
+                  onValueChange={(v: "M" | "F") => setSexo(v)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecciona sexo" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="M">Masculino</SelectItem>
+                    <SelectItem value="F">Femenino</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Peso (kg)</Label>
                 <Input
-                  id="talla"
                   type="number"
+                  min={0}
                   step="0.1"
-                  value={formData.talla}
-                  onChange={(e) => setFormData({ ...formData, talla: e.target.value })}
-                  placeholder="Ej: 170"
-                  min="0"
-                  required
+                  value={peso}
+                  onChange={(e) => setPeso(e.target.value)}
+                  placeholder="Ej. 70"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Talla (cm)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.1"
+                  value={talla}
+                  onChange={(e) => setTalla(e.target.value)}
+                  placeholder="Ej. 170"
                 />
               </div>
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="genero">Sexo</Label>
+
+            <div className="space-y-2">
+              <Label>Dispositivo de Monitoreo</Label>
               <Select
-                value={formData.genero}
-                onValueChange={(value) => setFormData({ ...formData, genero: value })}
-                required
+                value={dispositivoId}
+                onValueChange={(v) => setDispositivoId(v)}
               >
-                <SelectTrigger id="genero">
-                  <SelectValue placeholder="Selecciona sexo" />
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecciona un dispositivo (opcional)" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="M">Masculino</SelectItem>
-                  <SelectItem value="F">Femenino</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="dispositivo">Dispositivo de Monitoreo</Label>
-              <Select
-                value={formData.dispositivo_id}
-                onValueChange={(value) => setFormData({ ...formData, dispositivo_id: value })}
-                required
-              >
-                <SelectTrigger id="dispositivo">
-                  <SelectValue placeholder="Selecciona un dispositivo" />
-                </SelectTrigger>
-                <SelectContent>
-                  {dispositivos.map((dispositivo) => (
-                    <SelectItem key={dispositivo.id} value={dispositivo.id.toString()}>
-                      {dispositivo.nombre}
+                  {dispositivos.map((d) => (
+                    <SelectItem key={d.id} value={String(d.id)}>
+                      {d.nombre || `Dispositivo ${d.id}`}
                     </SelectItem>
                   ))}
+                  {dispositivos.length === 0 && (
+                    <SelectItem value="none" disabled>
+                      No hay dispositivos configurados
+                    </SelectItem>
+                  )}
                 </SelectContent>
               </Select>
             </div>
-            {formData.peso && formData.talla && (
-              <div className="rounded-lg bg-muted p-3">
-                <p className="text-sm text-muted-foreground">
-                  IMC calculado:{" "}
-                  <span className="font-semibold text-foreground">
-                    {calcularIMC(Number.parseFloat(formData.peso), Number.parseFloat(formData.talla)).toFixed(2)}
-                  </span>
-                </p>
-              </div>
-            )}
+
+            <div className="rounded-md bg-muted px-3 py-2 text-sm">
+              IMC calculado:{" "}
+              <span className="font-semibold">
+                {imc > 0 ? imc.toFixed(2) : "—"}
+              </span>
+            </div>
           </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={loading}>
-              Cancelar
-            </Button>
-            <Button type="submit" disabled={loading}>
-              {loading ? "Guardando..." : "Registrar Paciente"}
+
+          <DialogFooter className="mt-4">
+            <DialogClose asChild>
+              <Button type="button" variant="outline" disabled={guardando}>
+                Cancelar
+              </Button>
+            </DialogClose>
+            <Button type="submit" disabled={guardando}>
+              {guardando ? "Guardando..." : "Guardar"}
             </Button>
           </DialogFooter>
         </form>

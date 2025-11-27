@@ -1,23 +1,32 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Droplets, TrendingDown, TrendingUp, ArrowLeft, User } from "lucide-react"
 import Link from "next/link"
 import { useParams } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts"
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts"
 import { AgregarIngresoDialog } from "@/components/agregar-ingreso-dialog"
 import { AgregarEgresoDialog } from "@/components/agregar-egreso-dialog"
 import { EliminarPacienteDialog } from "@/components/eliminar-paciente-dialog"
-import type {
-  Paciente,
-  BalanceResumen,
-  ResumenFlujo,
-  DespreciablesInfo,
-} from "@/lib/types"
+import type { Paciente, BalanceResumen, ResumenFlujo } from "@/lib/types"
 import {
   getBalanceStatus,
   calcularIngresosInsensibles,
@@ -42,6 +51,99 @@ const formatNumber = (value: number | null | undefined, decimals = 2) => {
   return "0.00"
 }
 
+// -------- KDIGO TYPES & LOGIC ---------
+
+interface KdigoStatus {
+  stage: 0 | 1 | 2 | 3 | null
+  label: string
+  descripcion: string
+  textColor: string
+  badgeClass: string
+  diuresisMlKgH: number
+}
+
+/**
+ * Calcula el estadio KDIGO basado en:
+ * - egresosTotalesMl: solo egresos (sensor + manual + insensibles)
+ * - pesoKg
+ * - horasObs: horas de observación desde el inicio
+ */
+function calcularKdigo(
+  egresosTotalesMl: number,
+  pesoKg: number,
+  horasObs: number,
+): KdigoStatus {
+  if (!pesoKg || horasObs <= 0) {
+    return {
+      stage: null,
+      label: "No evaluable",
+      descripcion: "Se requiere peso del paciente y tiempo de observación mayor a 0 h.",
+      textColor: "text-muted-foreground",
+      badgeClass: "bg-gray-200 text-gray-800",
+      diuresisMlKgH: 0,
+    }
+  }
+
+  const diuresis = egresosTotalesMl / (pesoKg * horasObs) // mL/kg/h
+
+  if (horasObs < 6) {
+    return {
+      stage: null,
+      label: "En observación",
+      descripcion:
+        "Menos de 6 horas de observación. Aún no se puede clasificar según KDIGO por diuresis.",
+      textColor: "text-slate-600",
+      badgeClass: "bg-slate-200 text-slate-800",
+      diuresisMlKgH: diuresis,
+    }
+  }
+
+  let stage: 0 | 1 | 2 | 3 = 0
+  let label = "Sin LRA por diuresis"
+  let descripcion = "La diuresis estimada es adecuada de acuerdo con los criterios KDIGO."
+  let textColor = "text-emerald-600"
+  let badgeClass = "bg-emerald-100 text-emerald-800"
+
+  if (egresosTotalesMl <= 1 && horasObs >= 12) {
+    stage = 3
+    label = "Estadio 3 (anuria)"
+    descripcion =
+      "Diuresis prácticamente nula (anuria) durante al menos 12 horas. Alto riesgo de LRA severa."
+    textColor = "text-red-600"
+    badgeClass = "bg-red-100 text-red-800"
+  } else if (diuresis < 0.3 && horasObs >= 24) {
+    stage = 3
+    label = "Estadio 3"
+    descripcion =
+      "Diuresis < 0.3 mL/kg/h durante al menos 24 horas. Criterio KDIGO de LRA estadio 3."
+    textColor = "text-red-600"
+    badgeClass = "bg-red-100 text-red-800"
+  } else if (diuresis < 0.5 && horasObs >= 12) {
+    stage = 2
+    label = "Estadio 2"
+    descripcion =
+      "Diuresis < 0.5 mL/kg/h durante al menos 12 horas. Criterio KDIGO de LRA estadio 2."
+    textColor = "text-amber-600"
+    badgeClass = "bg-amber-100 text-amber-800"
+  } else if (diuresis < 0.5 && horasObs >= 6) {
+    stage = 1
+    label = "Estadio 1"
+    descripcion =
+      "Diuresis < 0.5 mL/kg/h entre 6 y 12 horas. Criterio KDIGO de LRA estadio 1."
+    textColor = "text-yellow-600"
+    badgeClass = "bg-yellow-100 text-yellow-800"
+  }
+
+  return {
+    stage,
+    label,
+    descripcion,
+    textColor,
+    badgeClass,
+    diuresisMlKgH: diuresis,
+  }
+}
+
 export default function PatientDetailPage() {
   const params = useParams()
   const patienteId = Number.parseInt(params.id as string)
@@ -61,10 +163,10 @@ export default function PatientDetailPage() {
   const [chartDataBalance, setChartDataBalance] = useState<ChartData[]>([])
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
-  const [horasTranscurridas, setHorasTranscurridas] = useState<number>(0)
 
   const supabase = createClient()
 
+  // --------- CARGAR PACIENTE ---------
   const cargarDatosPaciente = async () => {
     const { data, error } = await supabase
       .from("pacientes")
@@ -72,10 +174,36 @@ export default function PatientDetailPage() {
       .eq("id", patienteId)
       .single()
 
-    if (error) console.error("Error al cargar paciente:", error)
-    setPaciente(data as Paciente | null)
+    if (error) {
+      console.error("Error al cargar paciente:", error)
+      return
+    }
+
+    if (!data) return
+
+    const peso = data.peso_kg ?? data.peso ?? 0
+    const talla = data.talla_cm ?? data.talla ?? 0
+    const edad = data.edad_anios ?? data.edad ?? 0
+    const imc =
+      peso > 0 && talla > 0 ? Number((peso / Math.pow(talla / 100, 2)).toFixed(2)) : 0
+
+    const pacienteNormalizado: Paciente = {
+      id: data.id,
+      nombre: data.nombre,
+      edad_anios: edad,
+      peso_kg: peso,
+      talla_cm: talla,
+      imc,
+      fecha_creacion: data.created_at ?? "",
+      dispositivo_id: data.dispositivo_id ?? null,
+      ultimo_timestamp_leido: data.ultimo_timestamp_leido ?? null,
+      dispositivo: data.dispositivo ?? null,
+    }
+
+    setPaciente(pacienteNormalizado)
   }
 
+  // --------- CALCULAR BALANCE (solo eventos) ---------
   const calcularBalance = async () => {
     const { data, error } = await supabase
       .from("eventos_balance")
@@ -88,40 +216,43 @@ export default function PatientDetailPage() {
       return
     }
 
-    const ingresos_sensor_total = data
-      .filter((e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "sensor")
-      .reduce((s, e) => s + e.volumen_ml, 0)
+    const ingresosSensorEventos = data.filter(
+      (e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "sensor",
+    )
+    const ingresosManualEventos = data.filter(
+      (e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "manual",
+    )
+    const egresosSensorEventos = data.filter(
+      (e) => e.tipo_movimiento === "egreso" && e.origen_dato === "sensor",
+    )
+    const egresosManualEventos = data.filter(
+      (e) => e.tipo_movimiento === "egreso" && e.origen_dato === "manual",
+    )
 
-    const ingresos_manual_total = data
-      .filter((e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "manual")
-      .reduce((s, e) => s + e.volumen_ml, 0)
+    const ingresos_sensor_total = ingresosSensorEventos.reduce(
+      (s, e) => s + e.volumen_ml,
+      0,
+    )
+    const ingresos_manual_total = ingresosManualEventos.reduce(
+      (s, e) => s + e.volumen_ml,
+      0,
+    )
+    const egresos_sensor_total = egresosSensorEventos.reduce(
+      (s, e) => s + e.volumen_ml,
+      0,
+    )
+    const egresos_manual_total = egresosManualEventos.reduce(
+      (s, e) => s + e.volumen_ml,
+      0,
+    )
 
-    const egresos_sensor_total = data
-      .filter((e) => e.tipo_movimiento === "egreso" && e.origen_dato === "sensor")
-      .reduce((s, e) => s + e.volumen_ml, 0)
-
-    const egresos_manual_total = data
-      .filter((e) => e.tipo_movimiento === "egreso" && e.origen_dato === "manual")
-      .reduce((s, e) => s + e.volumen_ml, 0)
-
-    const ultimoIngresoSensor = data.find((e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "sensor")
-    const ultimoIngresoManual = data.find((e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "manual")
-    const ultimoEgresoSensor = data.find((e) => e.tipo_movimiento === "egreso" && e.origen_dato === "sensor")
-    const ultimoEgresoManual = data.find((e) => e.tipo_movimiento === "egreso" && e.origen_dato === "manual")
+    const ultimoIngresoSensor = ingresosSensorEventos[0]
+    const ultimoIngresoManual = ingresosManualEventos[0]
+    const ultimoEgresoSensor = egresosSensorEventos[0]
+    const ultimoEgresoManual = egresosManualEventos[0]
 
     const total_ingresos = ingresos_sensor_total + ingresos_manual_total
     const total_egresos = egresos_sensor_total + egresos_manual_total
-
-    // calcular horas transcurridas desde el primer evento
-    if (data.length > 0) {
-      const timestamps = data.map((e) => new Date(e.timestamp).getTime())
-      const minTs = Math.min(...timestamps)
-      const diffMs = Date.now() - minTs
-      const horas = Math.max(1, Math.round(diffMs / (1000 * 60 * 60)))
-      setHorasTranscurridas(horas)
-    } else {
-      setHorasTranscurridas(0)
-    }
 
     setBalance24h({
       total_ingresos_ml: total_ingresos,
@@ -132,8 +263,14 @@ export default function PatientDetailPage() {
       egresos_sensor: ultimoEgresoSensor?.volumen_ml || 0,
       egresos_manual: ultimoEgresoManual?.volumen_ml || 0,
     })
+
+    console.log("[patient] Totales sensor:", {
+      ingresos_sensor_total,
+      egresos_sensor_total,
+    })
   }
 
+  // --------- DATOS PARA GRÁFICAS ---------
   const cargarDatosGrafica = async () => {
     const { data, error } = await supabase
       .from("eventos_balance")
@@ -176,13 +313,15 @@ export default function PatientDetailPage() {
     setChartDataBalance(datosBalance.slice(-20))
   }
 
+  // --------- THINGSPEAK ---------
   const sincronizarThingSpeak = async () => {
     try {
       const res = await fetch("/api/sync-thingspeak")
+      console.log("[patient] Llamando /api/sync-thingspeak, status:", res.status)
       if (!res.ok) return
       await res.json().catch(() => null)
     } catch (e) {
-      console.error(e)
+      console.error("[patient] Error llamando a /api/sync-thingspeak:", e)
     }
   }
 
@@ -223,27 +362,33 @@ export default function PatientDetailPage() {
     )
   }
 
-  // ========= CÁLCULO DE DESPRECIABLES (INGRESOS / EGRESOS) =========
+  // ========= CÁLCULO DE DESPRECIABLES Y RESÚMENES =========
   const hayEventos =
     balance24h.total_ingresos_ml !== 0 || balance24h.total_egresos_ml !== 0
 
-  let ingresosDespreciables: DespreciablesInfo = { porHora: 0, acumulado: 0 }
-  let egresosDespreciables: DespreciablesInfo = { porHora: 0, acumulado: 0 }
+  let ingresosDespreciables = { porHora: 0, acumulado: 0 }
+  let egresosDespreciables = { porHora: 0, acumulado: 0 }
 
   if (hayEventos && paciente) {
-    const horas = Math.max(horasTranscurridas, 1)
+    const horas = 1
     ingresosDespreciables = calcularIngresosInsensibles(paciente.peso_kg, horas)
     egresosDespreciables = calcularEgresosInsensibles(paciente.peso_kg, horas)
   }
 
+  // Totales “reales” de eventos
+  const ingresos_sensor_total_real =
+    balance24h.total_ingresos_ml - (balance24h.ingresos_manual || 0)
+  const egresos_sensor_total_real =
+    balance24h.total_egresos_ml - (balance24h.egresos_manual || 0)
+
   const ingresosResumen: ResumenFlujo = {
     sensor: {
       ultimo: balance24h.ingresos_sensor,
-      total: balance24h.ingresos_sensor,
+      total: ingresos_sensor_total_real,
     },
     manual: {
       ultimo: balance24h.ingresos_manual,
-      total: balance24h.total_ingresos_ml - balance24h.ingresos_sensor,
+      total: balance24h.total_ingresos_ml - ingresos_sensor_total_real,
     },
     despreciables: ingresosDespreciables,
   }
@@ -251,29 +396,61 @@ export default function PatientDetailPage() {
   const egresosResumen: ResumenFlujo = {
     sensor: {
       ultimo: balance24h.egresos_sensor,
-      total: balance24h.egresos_sensor,
+      total: egresos_sensor_total_real,
     },
     manual: {
       ultimo: balance24h.egresos_manual,
-      total: balance24h.total_egresos_ml - balance24h.egresos_sensor,
+      total: balance24h.total_egresos_ml - egresos_sensor_total_real,
     },
     despreciables: egresosDespreciables,
   }
 
-  // Totales mostrados en las tarjetas de Ingresos/Egresos (incluyen despreciables)
   const totalIngresosMostrado =
     balance24h.total_ingresos_ml + ingresosResumen.despreciables.acumulado
   const totalEgresosMostrado =
     balance24h.total_egresos_ml + egresosResumen.despreciables.acumulado
 
-  // Balance principal: SOLO ingresos - egresos (igual que en el Lobby)
-  const balanceMostrado = balance24h.balance_ml
+  const balanceMostrado = totalIngresosMostrado - totalEgresosMostrado
   const balanceStatus = getBalanceStatus(balanceMostrado)
+
+  // ========= KDIGO =========
+  let horasObsKdigo = 0
+  if (paciente?.fecha_creacion) {
+    const t0 = new Date(paciente.fecha_creacion).getTime()
+    const now = Date.now()
+    if (!Number.isNaN(t0) && now > t0) {
+      horasObsKdigo = (now - t0) / (1000 * 60 * 60)
+    }
+  }
+
+  const kdigo = paciente
+    ? calcularKdigo(totalEgresosMostrado, paciente.peso_kg, horasObsKdigo)
+    : calcularKdigo(0, 0, 0)
+
+  useEffect(() => {
+    const guardarKdigo = async () => {
+      if (!paciente) return
+      await supabase.from("kdigo_estado_actual").upsert({
+        paciente_id: paciente.id,
+        updated_at: new Date().toISOString(),
+        horas_observadas: horasObsKdigo,
+        egresos_totales_ml: totalEgresosMostrado,
+        diuresis_ml_kg_h: kdigo.diuresisMlKgH,
+        estadio: kdigo.stage,
+        etiqueta: kdigo.label,
+      })
+    }
+
+    if (paciente) {
+      void guardarKdigo()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paciente?.id, horasObsKdigo, totalEgresosMostrado, kdigo.stage])
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-8">
       <div className="mx-auto max-w-7xl space-y-6">
-        {/* HEADER: volver y eliminar */}
+        {/* HEADER */}
         <div className="flex items-center justify-between">
           <Link href="/">
             <Button variant="outline" size="sm">
@@ -289,7 +466,7 @@ export default function PatientDetailPage() {
           )}
         </div>
 
-        {/* TARJETA DE INFORMACIÓN DEL PACIENTE */}
+        {/* PACIENTE */}
         {paciente && (
           <Card className="border-2">
             <CardHeader>
@@ -328,7 +505,7 @@ export default function PatientDetailPage() {
           </Card>
         )}
 
-        {/* SECCIÓN DE BALANCE HIDRICO */}
+        {/* BALANCE HIDRICO */}
         <div className="space-y-2">
           <h2 className="text-2xl font-bold">Balance Hídrico Total Acumulado</h2>
           {lastUpdate && (
@@ -360,29 +537,29 @@ export default function PatientDetailPage() {
 
               <div className="space-y-2 border-t pt-3 text-sm">
                 <p className="font-semibold text-muted-foreground">
-                  INFORMACIÓN DEL SENSOR
+                  SENSOR (total)
                 </p>
                 <div className="flex justify-between">
-                  <span>Último / Total</span>
+                  <span>Último / Volumen acumulado</span>
                   <span className="font-bold">
-                    {ingresosResumen.sensor.ultimo} mL /{" "}
-                    {ingresosResumen.sensor.total} mL
+                    {ingresosResumen.sensor.ultimo.toFixed(1)} mL /{" "}
+                    {ingresosResumen.sensor.total.toFixed(1)} mL
                   </span>
                 </div>
 
                 <p className="pt-2 font-semibold text-muted-foreground">
-                  INGRESO MANUAL
+                  MANUAL (total)
                 </p>
                 <div className="flex justify-between">
-                  <span>Último / Acumulado</span>
+                  <span>Último / Volumen acumulado</span>
                   <span className="font-bold">
-                    {ingresosResumen.manual.ultimo} mL /{" "}
-                    {ingresosResumen.manual.total} mL
+                    {ingresosResumen.manual.ultimo.toFixed(1)} mL /{" "}
+                    {ingresosResumen.manual.total.toFixed(1)} mL
                   </span>
                 </div>
 
                 <p className="pt-2 font-semibold text-muted-foreground">
-                  CÁLCULO DE DESPRECIABLES (INSENSIBLES)
+                  DESPRECIABLES
                 </p>
                 <div className="flex justify-between">
                   <span>Por hora / Acumulado</span>
@@ -416,29 +593,29 @@ export default function PatientDetailPage() {
 
               <div className="space-y-2 border-t pt-3 text-sm">
                 <p className="font-semibold text-muted-foreground">
-                  INFORMACIÓN DEL SENSOR
+                  SENSOR (total)
                 </p>
                 <div className="flex justify-between">
-                  <span>Último / Total</span>
+                  <span>Último / Volumen acumulado</span>
                   <span className="font-bold">
-                    {egresosResumen.sensor.ultimo} mL /{" "}
-                    {egresosResumen.sensor.total} mL
+                    {egresosResumen.sensor.ultimo.toFixed(1)} mL /{" "}
+                    {egresosResumen.sensor.total.toFixed(1)} mL
                   </span>
                 </div>
 
                 <p className="pt-2 font-semibold text-muted-foreground">
-                  EGRESO MANUAL
+                  MANUAL (total)
                 </p>
                 <div className="flex justify-between">
-                  <span>Último / Acumulado</span>
+                  <span>Último / Volumen acumulado</span>
                   <span className="font-bold">
-                    {egresosResumen.manual.ultimo} mL /{" "}
-                    {egresosResumen.manual.total} mL
+                    {egresosResumen.manual.ultimo.toFixed(1)} mL /{" "}
+                    {egresosResumen.manual.total.toFixed(1)} mL
                   </span>
                 </div>
 
                 <p className="pt-2 font-semibold text-muted-foreground">
-                  CÁLCULO DE DESPRECIABLES (INSENSIBLES)
+                  DESPRECIABLES
                 </p>
                 <div className="flex justify-between">
                   <span>Por hora / Acumulado</span>
@@ -474,6 +651,37 @@ export default function PatientDetailPage() {
           </Card>
         </div>
 
+        {/* KDIGO */}
+        {paciente && (
+          <Card className="border-2">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-lg">Criterios KDIGO (diuresis)</CardTitle>
+                <Badge className={kdigo.badgeClass}>{kdigo.label}</Badge>
+              </div>
+              <CardDescription>
+                Basado únicamente en egresos (sensor, manual e insensibles), expresados como
+                mL/kg/h.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              <p>
+                Diuresis estimada:{" "}
+                <span className={`font-semibold ${kdigo.textColor}`}>
+                  {kdigo.diuresisMlKgH.toFixed(2)} mL/kg/h
+                </span>
+              </p>
+              <p>
+                Horas de observación desde el inicio:{" "}
+                <span className="font-semibold">
+                  {horasObsKdigo.toFixed(1)} h
+                </span>
+              </p>
+              <p className="text-muted-foreground">{kdigo.descripcion}</p>
+            </CardContent>
+          </Card>
+        )}
+
         {/* BOTONES */}
         <div className="flex gap-3">
           <AgregarIngresoDialog pacienteId={patienteId} onEventoAgregado={actualizarTodo} />
@@ -499,7 +707,13 @@ export default function PatientDetailPage() {
                   <XAxis dataKey="time" />
                   <YAxis />
                   <Tooltip />
-                  <Line type="monotone" dataKey="volumen" stroke="#3b82f6" strokeWidth={2} dot />
+                  <Line
+                    type="monotone"
+                    dataKey="volumen"
+                    stroke="#3b82f6"
+                    strokeWidth={2}
+                    dot
+                  />
                 </LineChart>
               </ResponsiveContainer>
             </CardContent>
@@ -517,7 +731,13 @@ export default function PatientDetailPage() {
                   <XAxis dataKey="time" />
                   <YAxis />
                   <Tooltip />
-                  <Line type="monotone" dataKey="volumen" stroke="#f97316" strokeWidth={2} dot />
+                  <Line
+                    type="monotone"
+                    dataKey="volumen"
+                    stroke="#f97316"
+                    strokeWidth={2}
+                    dot
+                  />
                 </LineChart>
               </ResponsiveContainer>
             </CardContent>

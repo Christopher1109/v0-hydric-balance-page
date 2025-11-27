@@ -1,14 +1,20 @@
+// lib/supabase/client.ts
 import { createBrowserClient } from "@supabase/ssr"
+import type { SupabaseClient } from "@supabase/supabase-js"
 
-let supabaseClient: ReturnType<typeof createBrowserClient> | null = null
+let supabaseClient: SupabaseClient | null = null
 
-export function createClient() {
+export function createClient(): SupabaseClient {
   if (supabaseClient) {
     return supabaseClient
   }
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY
+  const supabaseUrl =
+    process.env.NEXT_PUBLIC_SUPABASE_URL
+
+  const supabaseAnonKey =
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_ANON_KEY
 
   if (!supabaseUrl || !supabaseAnonKey) {
     throw new Error(
