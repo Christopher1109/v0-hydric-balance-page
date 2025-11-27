@@ -33,7 +33,7 @@ export function NuevoPacienteDialog({ onPacienteCreado }: NuevoPacienteDialogPro
     edad: "",
     peso: "",
     talla: "",
-    sexo: "",
+    genero: "",
     dispositivo_id: "",
   })
 
@@ -80,7 +80,7 @@ export function NuevoPacienteDialog({ onPacienteCreado }: NuevoPacienteDialogPro
           edad: Number.parseInt(formData.edad),
           peso: peso,
           talla: talla,
-          sexo: formData.sexo,
+          genero: formData.genero,
           dispositivo_id: Number.parseInt(formData.dispositivo_id),
         })
         .select()
@@ -92,7 +92,7 @@ export function NuevoPacienteDialog({ onPacienteCreado }: NuevoPacienteDialogPro
 
       console.log("[v0] Paciente creado exitosamente:", data)
 
-      setFormData({ nombre: "", edad: "", peso: "", talla: "", sexo: "", dispositivo_id: "" })
+      setFormData({ nombre: "", edad: "", peso: "", talla: "", genero: "", dispositivo_id: "" })
       setOpen(false)
 
       // Esperar un momento para que el diálogo se cierre visualmente antes de recargar
@@ -174,13 +174,13 @@ export function NuevoPacienteDialog({ onPacienteCreado }: NuevoPacienteDialogPro
               </div>
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="sexo">Sexo</Label>
+              <Label htmlFor="genero">Sexo</Label>
               <Select
-                value={formData.sexo}
-                onValueChange={(value) => setFormData({ ...formData, sexo: value })}
+                value={formData.genero}
+                onValueChange={(value) => setFormData({ ...formData, genero: value })}
                 required
               >
-                <SelectTrigger id="sexo">
+                <SelectTrigger id="genero">
                   <SelectValue placeholder="Selecciona sexo" />
                 </SelectTrigger>
                 <SelectContent>

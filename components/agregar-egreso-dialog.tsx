@@ -1,12 +1,12 @@
 "use client"
 
 import { useState } from "react"
+import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -15,172 +15,153 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { TrendingDown } from 'lucide-react'
-import { createClient } from "@/lib/supabase/client"
-import type { CategoriaEgreso, OrigenDato } from "@/lib/types"
 
 interface AgregarEgresoDialogProps {
   pacienteId: number
-  onEventoAgregado: () => void
+  onEventoAgregado: () => void | Promise<void>
 }
 
-const CATEGORIAS_EGRESO: { value: CategoriaEgreso; label: string }[] = [
-  { value: "orina", label: "Orina" },
-  { value: "heces_liquidas", label: "Heces líquidas / diarrea" },
-  { value: "vomito", label: "Vómito" },
-  { value: "drenaje_quirurgico", label: "Drenaje quirúrgico" },
-  { value: "aspirado_gastrico", label: "Aspirado gástrico / sonda nasogástrica" },
-  { value: "sangrado", label: "Sangrado" },
-  { value: "otros_egresos", label: "Otros egresos" },
-]
-
 export function AgregarEgresoDialog({ pacienteId, onEventoAgregado }: AgregarEgresoDialogProps) {
+  const supabase = createClient()
+
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [formData, setFormData] = useState({
-    categoria: "" as CategoriaEgreso,
-    volumen: "",
-    peso: "",
-    origen: "manual" as OrigenDato,
-    notas: "",
-  })
 
-  const volumenCalculado = formData.peso ? parseFloat(formData.peso) : formData.volumen ? parseFloat(formData.volumen) : 0
+  const [tipoEgreso, setTipoEgreso] = useState<string>("Diuresis (orina)")
+  const [volumen, setVolumen] = useState<string>("")
+  const [origenDato, setOrigenDato] = useState<string>("manual")
+  const [notas, setNotas] = useState<string>("")
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const resetForm = () => {
+    setTipoEgreso("Diuresis (orina)")
+    setVolumen("")
+    setOrigenDato("manual")
+    setNotas("")
+  }
+
+  const handleSubmit = async () => {
+    const volumenNumber = Number.parseFloat(volumen)
+
+    if (!volumen || Number.isNaN(volumenNumber) || volumenNumber <= 0) {
+      alert("Por favor ingresa un volumen válido mayor a 0.")
+      return
+    }
+
     setLoading(true)
-
     try {
-      const supabase = createClient()
       const { error } = await supabase.from("eventos_balance").insert({
         paciente_id: pacienteId,
         tipo_movimiento: "egreso",
-        categoria: formData.categoria,
-        volumen_ml: volumenCalculado,
-        peso_g: formData.peso ? parseFloat(formData.peso) : null,
-        origen_dato: formData.origen,
-        notas: formData.notas || null,
+        volumen_ml: volumenNumber,
+        origen_dato: origenDato,
+        descripcion: `${tipoEgreso} - ${notas}`.trim(),
       })
 
-      if (error) throw error
+      if (error) {
+        console.error("[AgregarEgresoDialog] Error al insertar:", error)
+        alert("Error al agregar el egreso. Por favor intenta de nuevo.")
+        return
+      }
 
-      setFormData({ categoria: "" as CategoriaEgreso, volumen: "", peso: "", origen: "manual", notas: "" })
+      await onEventoAgregado()
+      resetForm()
       setOpen(false)
-      onEventoAgregado()
-    } catch (error) {
-      console.error("Error al agregar egreso:", error)
-      alert("Error al agregar el egreso. Por favor intenta de nuevo.")
+    } catch (e) {
+      console.error("[AgregarEgresoDialog] Error inesperado:", e)
+      alert("Error inesperado al agregar el egreso.")
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!loading) setOpen(o)
+      }}
+    >
       <DialogTrigger asChild>
-        <Button variant="secondary" className="gap-2">
-          <TrendingDown className="h-4 w-4" />
+        <Button variant="success" className="bg-green-600 hover:bg-green-700 text-white">
           Agregar Egreso
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[500px]">
-        <form onSubmit={handleSubmit}>
-          <DialogHeader>
-            <DialogTitle>Registrar Egreso de Líquidos</DialogTitle>
-            <DialogDescription>Registra la eliminación de líquidos del paciente.</DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <div className="grid gap-2">
-              <Label htmlFor="categoria-egreso">Tipo de egreso</Label>
-              <Select
-                value={formData.categoria}
-                onValueChange={(value) => setFormData({ ...formData, categoria: value as CategoriaEgreso })}
-                required
-              >
-                <SelectTrigger id="categoria-egreso">
-                  <SelectValue placeholder="Selecciona el tipo de egreso" />
-                </SelectTrigger>
-                <SelectContent>
-                  {CATEGORIAS_EGRESO.map((cat) => (
-                    <SelectItem key={cat.value} value={cat.value}>
-                      {cat.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="volumen-egreso">Volumen medido (mL)</Label>
-                <Input
-                  id="volumen-egreso"
-                  type="number"
-                  step="0.1"
-                  value={formData.volumen}
-                  onChange={(e) => setFormData({ ...formData, volumen: e.target.value, peso: "" })}
-                  placeholder="Ej: 250"
-                  min="0"
-                  disabled={!!formData.peso}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="peso-egreso">Peso medido (g)</Label>
-                <Input
-                  id="peso-egreso"
-                  type="number"
-                  step="0.1"
-                  value={formData.peso}
-                  onChange={(e) => setFormData({ ...formData, peso: e.target.value, volumen: "" })}
-                  placeholder="Ej: 250"
-                  min="0"
-                  disabled={!!formData.volumen}
-                />
-              </div>
-            </div>
-            {formData.peso && (
-              <div className="rounded-lg bg-muted p-3">
-                <p className="text-sm text-muted-foreground">
-                  Volumen calculado (1g ≈ 1mL):{" "}
-                  <span className="font-semibold text-foreground">{volumenCalculado.toFixed(1)} mL</span>
-                </p>
-              </div>
-            )}
-            <div className="grid gap-2">
-              <Label htmlFor="origen-egreso">Origen del dato</Label>
-              <Select
-                value={formData.origen}
-                onValueChange={(value) => setFormData({ ...formData, origen: value as OrigenDato })}
-              >
-                <SelectTrigger id="origen-egreso">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="manual">Registrado manualmente</SelectItem>
-                  <SelectItem value="sensor">Provenir de sensor de egreso (orina)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="notas-egreso">Notas (opcional)</Label>
-              <Textarea
-                id="notas-egreso"
-                value={formData.notas}
-                onChange={(e) => setFormData({ ...formData, notas: e.target.value })}
-                placeholder="Observaciones adicionales..."
-                rows={3}
-              />
-            </div>
+
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Registrar Egreso de Líquidos</DialogTitle>
+          <DialogDescription>Registra la eliminación de líquidos del paciente.</DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <Label>Tipo de egreso</Label>
+            <Select value={tipoEgreso} onValueChange={setTipoEgreso}>
+              <SelectTrigger>
+                <SelectValue placeholder="Selecciona el tipo de egreso" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Diuresis (orina)">Diuresis (orina)</SelectItem>
+                <SelectItem value="Drenaje">Drenaje</SelectItem>
+                <SelectItem value="Sangrado">Sangrado</SelectItem>
+                <SelectItem value="Vómito">Vómito</SelectItem>
+                <SelectItem value="Deposiciones líquidas">Deposiciones líquidas</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={loading}>
+
+          <div className="space-y-1">
+            <Label>Volumen registrado (mL)</Label>
+            <Input
+              type="number"
+              min={0}
+              step="0.1"
+              value={volumen}
+              onChange={(e) => setVolumen(e.target.value)}
+              placeholder="Ej. 80"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <Label>Origen del dato</Label>
+            <Select value={origenDato} onValueChange={setOrigenDato}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="manual">Registrado manualmente</SelectItem>
+                <SelectItem value="sensor">Desde sensor / API</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-1">
+            <Label>Notas (opcional)</Label>
+            <Textarea
+              value={notas}
+              onChange={(e) => setNotas(e.target.value)}
+              placeholder="Observaciones adicionales..."
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                if (!loading) {
+                  resetForm()
+                  setOpen(false)
+                }
+              }}
+            >
               Cancelar
             </Button>
-            <Button type="submit" disabled={loading || (!formData.volumen && !formData.peso)}>
-              {loading ? "Guardando..." : "Registrar Egreso"}
+            <Button type="button" onClick={handleSubmit} disabled={loading}>
+              {loading ? "Guardando..." : "Guardar"}
             </Button>
-          </DialogFooter>
-        </form>
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   )

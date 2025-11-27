@@ -90,3 +90,62 @@ export function getBalanceStatus(balanceMl: number): {
     cardBgColor: "bg-red-50/50 dark:bg-red-950/20",
   }
 }
+
+// ---------------------------
+// MODELOS NUEVOS DE FLUJO
+// ---------------------------
+
+export interface FuenteDato {
+  ultimo: number; // último valor (mL)
+  total: number;  // total acumulado (mL)
+}
+
+export interface DespreciablesInfo {
+  porHora: number;   // mL que corresponden a esta hora
+  acumulado: number; // mL acumulados hasta esta hora
+}
+
+export interface ResumenFlujo {
+  sensor: FuenteDato;
+  manual: FuenteDato;
+  despreciables: DespreciablesInfo;
+}
+
+
+// ----------------------------------------------------
+// NUEVA FUNCIÓN PARA INGRESOS INSENSIBLES (0.2 × kg)
+// ----------------------------------------------------
+export function calcularIngresosInsensibles(
+  pesoKg: number,
+  horasTranscurridas: number
+): DespreciablesInfo {
+  const porHora = 0.2 * pesoKg;
+  const acumulado = porHora * horasTranscurridas;
+  return { porHora, acumulado };
+}
+
+// ----------------------------------------------------
+// NUEVA FUNCIÓN PARA EGRESOS INSENSIBLES (0.5 × kg)
+// ----------------------------------------------------
+export function calcularEgresosInsensibles(
+  pesoKg: number,
+  horasTranscurridas: number
+): DespreciablesInfo {
+  const porHora = 0.5 * pesoKg;
+  const acumulado = porHora * horasTranscurridas;
+  return { porHora, acumulado };
+}
+
+
+// ------------------------------------------------------------------
+// TU FUNCIÓN ORIGINAL (NO SE TOCA → POR COMPATIBILIDAD)
+// Actualmente esta representa ingresos insensibles. La dejo igual.
+// ------------------------------------------------------------------
+export function calcularDespreciables(
+  pesoKg: number,
+  horasTranscurridas: number
+): DespreciablesInfo {
+  const porHora = 0.2 * pesoKg;      // mL/h
+  const acumulado = porHora * horasTranscurridas;
+  return { porHora, acumulado };
+}

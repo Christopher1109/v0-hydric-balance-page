@@ -4,7 +4,7 @@ import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Activity, Droplets, TrendingDown, TrendingUp, ArrowLeft, User } from "lucide-react"
+import { Droplets, TrendingDown, TrendingUp, ArrowLeft, User } from "lucide-react"
 import Link from "next/link"
 import { useParams } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
@@ -12,8 +12,17 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { AgregarIngresoDialog } from "@/components/agregar-ingreso-dialog"
 import { AgregarEgresoDialog } from "@/components/agregar-egreso-dialog"
 import { EliminarPacienteDialog } from "@/components/eliminar-paciente-dialog"
-import type { Paciente, BalanceResumen } from "@/lib/types"
-import { getBalanceStatus } from "@/lib/types"
+import type {
+  Paciente,
+  BalanceResumen,
+  ResumenFlujo,
+  DespreciablesInfo,
+} from "@/lib/types"
+import {
+  getBalanceStatus,
+  calcularIngresosInsensibles,
+  calcularEgresosInsensibles,
+} from "@/lib/types"
 
 interface ChartData {
   time: string
@@ -25,6 +34,12 @@ interface BalanceDesglosado extends BalanceResumen {
   ingresos_manual: number
   egresos_sensor: number
   egresos_manual: number
+}
+
+// Helper para evitar errores de toFixed
+const formatNumber = (value: number | null | undefined, decimals = 2) => {
+  if (typeof value === "number" && !Number.isNaN(value)) return value.toFixed(decimals)
+  return "0.00"
 }
 
 export default function PatientDetailPage() {
@@ -46,25 +61,19 @@ export default function PatientDetailPage() {
   const [chartDataBalance, setChartDataBalance] = useState<ChartData[]>([])
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
+  const [horasTranscurridas, setHorasTranscurridas] = useState<number>(0)
 
   const supabase = createClient()
 
   const cargarDatosPaciente = async () => {
     const { data, error } = await supabase
       .from("pacientes")
-      .select(`
-        *,
-        dispositivo:dispositivos(*)
-      `)
+      .select(`*, dispositivo:dispositivos(*)`)
       .eq("id", patienteId)
       .single()
 
-    if (error) {
-      console.error("Error al cargar paciente:", error)
-      return
-    }
-
-    setPaciente(data)
+    if (error) console.error("Error al cargar paciente:", error)
+    setPaciente(data as Paciente | null)
   }
 
   const calcularBalance = async () => {
@@ -81,19 +90,19 @@ export default function PatientDetailPage() {
 
     const ingresos_sensor_total = data
       .filter((e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "sensor")
-      .reduce((sum, e) => sum + e.volumen_ml, 0)
+      .reduce((s, e) => s + e.volumen_ml, 0)
 
     const ingresos_manual_total = data
       .filter((e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "manual")
-      .reduce((sum, e) => sum + e.volumen_ml, 0)
+      .reduce((s, e) => s + e.volumen_ml, 0)
 
     const egresos_sensor_total = data
       .filter((e) => e.tipo_movimiento === "egreso" && e.origen_dato === "sensor")
-      .reduce((sum, e) => sum + e.volumen_ml, 0)
+      .reduce((s, e) => s + e.volumen_ml, 0)
 
     const egresos_manual_total = data
       .filter((e) => e.tipo_movimiento === "egreso" && e.origen_dato === "manual")
-      .reduce((sum, e) => sum + e.volumen_ml, 0)
+      .reduce((s, e) => s + e.volumen_ml, 0)
 
     const ultimoIngresoSensor = data.find((e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "sensor")
     const ultimoIngresoManual = data.find((e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "manual")
@@ -103,11 +112,16 @@ export default function PatientDetailPage() {
     const total_ingresos = ingresos_sensor_total + ingresos_manual_total
     const total_egresos = egresos_sensor_total + egresos_manual_total
 
-    console.log("[v0] Total Ingresos:", total_ingresos, "Total Egresos:", total_egresos)
-    console.log("[v0] Último Ingreso Sensor:", ultimoIngresoSensor?.volumen_ml || 0)
-    console.log("[v0] Último Ingreso Manual:", ultimoIngresoManual?.volumen_ml || 0)
-    console.log("[v0] Último Egreso Sensor:", ultimoEgresoSensor?.volumen_ml || 0)
-    console.log("[v0] Último Egreso Manual:", ultimoEgresoManual?.volumen_ml || 0)
+    // calcular horas transcurridas desde el primer evento
+    if (data.length > 0) {
+      const timestamps = data.map((e) => new Date(e.timestamp).getTime())
+      const minTs = Math.min(...timestamps)
+      const diffMs = Date.now() - minTs
+      const horas = Math.max(1, Math.round(diffMs / (1000 * 60 * 60)))
+      setHorasTranscurridas(horas)
+    } else {
+      setHorasTranscurridas(0)
+    }
 
     setBalance24h({
       total_ingresos_ml: total_ingresos,
@@ -129,13 +143,8 @@ export default function PatientDetailPage() {
 
     if (error || !data) {
       console.error("Error al cargar datos de gráfica:", error)
-      setChartDataIngresos([])
-      setChartDataEgresos([])
-      setChartDataBalance([])
       return
     }
-
-    console.log("[v0] Total eventos obtenidos:", data.length)
 
     const datosIngresos: ChartData[] = []
     const datosEgresos: ChartData[] = []
@@ -143,23 +152,20 @@ export default function PatientDetailPage() {
 
     let balanceAcumulado = 0
 
-    // Procesar cada evento individualmente
-    data.forEach((evento) => {
-      const fecha = new Date(evento.timestamp)
+    data.forEach((e) => {
+      const fecha = new Date(e.timestamp)
       const timeKey = fecha.toLocaleTimeString("es-ES", {
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",
       })
 
-      if (evento.tipo_movimiento === "ingreso") {
-        datosIngresos.push({ time: timeKey, volumen: evento.volumen_ml })
-        balanceAcumulado += evento.volumen_ml
-        console.log("[v0] Ingreso:", evento.volumen_ml, "Balance acumulado:", balanceAcumulado)
+      if (e.tipo_movimiento === "ingreso") {
+        datosIngresos.push({ time: timeKey, volumen: e.volumen_ml })
+        balanceAcumulado += e.volumen_ml
       } else {
-        datosEgresos.push({ time: timeKey, volumen: -evento.volumen_ml })
-        balanceAcumulado -= evento.volumen_ml
-        console.log("[v0] Egreso:", evento.volumen_ml, "Balance acumulado:", balanceAcumulado)
+        datosEgresos.push({ time: timeKey, volumen: -e.volumen_ml })
+        balanceAcumulado -= e.volumen_ml
       }
 
       datosBalance.push({ time: timeKey, volumen: balanceAcumulado })
@@ -172,22 +178,11 @@ export default function PatientDetailPage() {
 
   const sincronizarThingSpeak = async () => {
     try {
-      const response = await fetch("/api/sync-thingspeak")
-
-      if (!response.ok) {
-        console.error("[v0] Error en sincronización ThingSpeak:", response.status)
-        return
-      }
-
-      const contentType = response.headers.get("content-type")
-      if (contentType && contentType.includes("application/json")) {
-        const data = await response.json()
-        console.log("[v0] Sincronización completada:", data)
-      } else {
-        console.error("[v0] Respuesta no-JSON recibida de la API")
-      }
-    } catch (error) {
-      console.error("[v0] Error al sincronizar ThingSpeak:", error)
+      const res = await fetch("/api/sync-thingspeak")
+      if (!res.ok) return
+      await res.json().catch(() => null)
+    } catch (e) {
+      console.error(e)
     }
   }
 
@@ -200,28 +195,9 @@ export default function PatientDetailPage() {
   }
 
   const reiniciarBalance = async () => {
-    if (
-      !confirm(
-        "¿Estás seguro de que quieres reiniciar el balance? Esto eliminará todos los eventos registrados para este paciente.",
-      )
-    ) {
-      return
-    }
-
-    setLoading(true)
-    try {
-      const { error } = await supabase.from("eventos_balance").delete().eq("paciente_id", patienteId)
-
-      if (error) throw error
-
-      await actualizarTodo()
-      alert("Balance reiniciado correctamente")
-    } catch (error) {
-      console.error("Error al reiniciar balance:", error)
-      alert("Error al reiniciar el balance")
-    } finally {
-      setLoading(false)
-    }
+    if (!confirm("¿Seguro que deseas reiniciar el balance?")) return
+    await supabase.from("eventos_balance").delete().eq("paciente_id", patienteId)
+    await actualizarTodo()
   }
 
   useEffect(() => {
@@ -247,15 +223,57 @@ export default function PatientDetailPage() {
     )
   }
 
-  const balanceStatus = getBalanceStatus(balance24h.balance_ml)
-  const BalanceIcon = balance24h.balance_ml > 500 ? TrendingUp : balance24h.balance_ml < -500 ? TrendingDown : Activity
+  // ========= CÁLCULO DE DESPRECIABLES (INGRESOS / EGRESOS) =========
+  const hayEventos =
+    balance24h.total_ingresos_ml !== 0 || balance24h.total_egresos_ml !== 0
 
-  const pageBgColor = balanceStatus.color === "neutro" ? "bg-green-50/50" : "bg-red-50/50"
+  let ingresosDespreciables: DespreciablesInfo = { porHora: 0, acumulado: 0 }
+  let egresosDespreciables: DespreciablesInfo = { porHora: 0, acumulado: 0 }
 
-  // UI COMPLETA
+  if (hayEventos && paciente) {
+    const horas = Math.max(horasTranscurridas, 1)
+    ingresosDespreciables = calcularIngresosInsensibles(paciente.peso_kg, horas)
+    egresosDespreciables = calcularEgresosInsensibles(paciente.peso_kg, horas)
+  }
+
+  const ingresosResumen: ResumenFlujo = {
+    sensor: {
+      ultimo: balance24h.ingresos_sensor,
+      total: balance24h.ingresos_sensor,
+    },
+    manual: {
+      ultimo: balance24h.ingresos_manual,
+      total: balance24h.total_ingresos_ml - balance24h.ingresos_sensor,
+    },
+    despreciables: ingresosDespreciables,
+  }
+
+  const egresosResumen: ResumenFlujo = {
+    sensor: {
+      ultimo: balance24h.egresos_sensor,
+      total: balance24h.egresos_sensor,
+    },
+    manual: {
+      ultimo: balance24h.egresos_manual,
+      total: balance24h.total_egresos_ml - balance24h.egresos_sensor,
+    },
+    despreciables: egresosDespreciables,
+  }
+
+  // Totales mostrados en las tarjetas de Ingresos/Egresos (incluyen despreciables)
+  const totalIngresosMostrado =
+    balance24h.total_ingresos_ml + ingresosResumen.despreciables.acumulado
+  const totalEgresosMostrado =
+    balance24h.total_egresos_ml + egresosResumen.despreciables.acumulado
+
+  // Balance principal: SOLO ingresos - egresos (igual que en el Lobby)
+  const balanceMostrado = balance24h.balance_ml
+  const balanceStatus = getBalanceStatus(balanceMostrado)
+
   return (
-    <div className={`min-h-screen bg-background p-4 md:p-8 ${pageBgColor}`}>
+    <div className="min-h-screen bg-background p-4 md:p-8">
       <div className="mx-auto max-w-7xl space-y-6">
+        {/* HEADER: volver y eliminar */}
         <div className="flex items-center justify-between">
           <Link href="/">
             <Button variant="outline" size="sm">
@@ -263,11 +281,17 @@ export default function PatientDetailPage() {
               Volver al Lobby
             </Button>
           </Link>
-          {paciente && <EliminarPacienteDialog pacienteId={patienteId} nombrePaciente={paciente.nombre} />}
+          {paciente && (
+            <EliminarPacienteDialog
+              pacienteId={patienteId}
+              nombrePaciente={paciente.nombre}
+            />
+          )}
         </div>
 
+        {/* TARJETA DE INFORMACIÓN DEL PACIENTE */}
         {paciente && (
-          <Card className={`border-2 ${balanceStatus.cardBgColor}`}>
+          <Card className="border-2">
             <CardHeader>
               <div className="flex items-center gap-3">
                 <div className="rounded-full bg-primary/10 p-3">
@@ -295,14 +319,16 @@ export default function PatientDetailPage() {
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">IMC</p>
-                  <p className="text-2xl font-bold">{paciente.imc.toFixed(2)}</p>
+                  <p className="text-2xl font-bold">
+                    {formatNumber(paciente.imc, 2)}
+                  </p>
                 </div>
               </div>
             </CardContent>
           </Card>
         )}
 
-        {/* TARJETAS DE RESUMEN */}
+        {/* SECCIÓN DE BALANCE HIDRICO */}
         <div className="space-y-2">
           <h2 className="text-2xl font-bold">Balance Hídrico Total Acumulado</h2>
           {lastUpdate && (
@@ -313,7 +339,7 @@ export default function PatientDetailPage() {
         </div>
 
         <div className="grid gap-6 md:grid-cols-3">
-          {/* INGRESOS CON DESGLOSE */}
+          {/* INGRESOS */}
           <Card className="border-2">
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
@@ -324,25 +350,52 @@ export default function PatientDetailPage() {
               </div>
               <CardDescription>Total acumulado</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="space-y-4">
               <div>
-                <p className="text-4xl font-bold text-blue-600">{balance24h.total_ingresos_ml}</p>
+                <p className="text-4xl font-bold text-blue-600">
+                  {totalIngresosMostrado.toFixed(1)}
+                </p>
                 <p className="text-sm text-muted-foreground">mililitros (mL)</p>
               </div>
-              <div className="space-y-1 border-t pt-3">
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Del sensor API:</span>
-                  <span className="font-semibold">{balance24h.ingresos_sensor} mL</span>
+
+              <div className="space-y-2 border-t pt-3 text-sm">
+                <p className="font-semibold text-muted-foreground">
+                  INFORMACIÓN DEL SENSOR
+                </p>
+                <div className="flex justify-between">
+                  <span>Último / Total</span>
+                  <span className="font-bold">
+                    {ingresosResumen.sensor.ultimo} mL /{" "}
+                    {ingresosResumen.sensor.total} mL
+                  </span>
                 </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Cálculo manual:</span>
-                  <span className="font-semibold">{balance24h.ingresos_manual} mL</span>
+
+                <p className="pt-2 font-semibold text-muted-foreground">
+                  INGRESO MANUAL
+                </p>
+                <div className="flex justify-between">
+                  <span>Último / Acumulado</span>
+                  <span className="font-bold">
+                    {ingresosResumen.manual.ultimo} mL /{" "}
+                    {ingresosResumen.manual.total} mL
+                  </span>
+                </div>
+
+                <p className="pt-2 font-semibold text-muted-foreground">
+                  CÁLCULO DE DESPRECIABLES (INSENSIBLES)
+                </p>
+                <div className="flex justify-between">
+                  <span>Por hora / Acumulado</span>
+                  <span className="font-bold">
+                    {ingresosResumen.despreciables.porHora.toFixed(1)} mL /{" "}
+                    {ingresosResumen.despreciables.acumulado.toFixed(1)} mL
+                  </span>
                 </div>
               </div>
             </CardContent>
           </Card>
 
-          {/* EGRESOS CON DESGLOSE */}
+          {/* EGRESOS */}
           <Card className="border-2">
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
@@ -353,25 +406,52 @@ export default function PatientDetailPage() {
               </div>
               <CardDescription>Total acumulado</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="space-y-4">
               <div>
-                <p className="text-4xl font-bold text-orange-600">{balance24h.total_egresos_ml}</p>
+                <p className="text-4xl font-bold text-orange-600">
+                  {totalEgresosMostrado.toFixed(1)}
+                </p>
                 <p className="text-sm text-muted-foreground">mililitros (mL)</p>
               </div>
-              <div className="space-y-1 border-t pt-3">
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Del sensor API:</span>
-                  <span className="font-semibold">{balance24h.egresos_sensor} mL</span>
+
+              <div className="space-y-2 border-t pt-3 text-sm">
+                <p className="font-semibold text-muted-foreground">
+                  INFORMACIÓN DEL SENSOR
+                </p>
+                <div className="flex justify-between">
+                  <span>Último / Total</span>
+                  <span className="font-bold">
+                    {egresosResumen.sensor.ultimo} mL /{" "}
+                    {egresosResumen.sensor.total} mL
+                  </span>
                 </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Cálculo manual:</span>
-                  <span className="font-semibold">{balance24h.egresos_manual} mL</span>
+
+                <p className="pt-2 font-semibold text-muted-foreground">
+                  EGRESO MANUAL
+                </p>
+                <div className="flex justify-between">
+                  <span>Último / Acumulado</span>
+                  <span className="font-bold">
+                    {egresosResumen.manual.ultimo} mL /{" "}
+                    {egresosResumen.manual.total} mL
+                  </span>
+                </div>
+
+                <p className="pt-2 font-semibold text-muted-foreground">
+                  CÁLCULO DE DESPRECIABLES (INSENSIBLES)
+                </p>
+                <div className="flex justify-between">
+                  <span>Por hora / Acumulado</span>
+                  <span className="font-bold">
+                    {egresosResumen.despreciables.porHora.toFixed(1)} mL /{" "}
+                    {egresosResumen.despreciables.acumulado.toFixed(1)} mL
+                  </span>
                 </div>
               </div>
             </CardContent>
           </Card>
 
-          {/* BALANCE (SIN CAMBIOS) */}
+          {/* BALANCE HIDRICO */}
           <Card className="border-2">
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
@@ -382,10 +462,12 @@ export default function PatientDetailPage() {
               </div>
               <CardDescription>Resultado neto acumulado</CardDescription>
             </CardHeader>
-            <CardContent>
-              <p className={`text-4xl font-bold ${balanceStatus.textColor}`}>{balance24h.balance_ml}</p>
+            <CardContent className="flex flex-col items-center justify-center space-y-2 text-center">
+              <p className={`text-5xl font-extrabold ${balanceStatus.textColor}`}>
+                {balanceMostrado.toFixed(1)}
+              </p>
               <p className="text-sm text-muted-foreground">mililitros (mL)</p>
-              <Badge className="mt-2" variant="secondary">
+              <Badge className="mt-1 px-4 py-1 text-sm" variant="secondary">
                 {balanceStatus.label}
               </Badge>
             </CardContent>
@@ -404,7 +486,6 @@ export default function PatientDetailPage() {
         {/* GRÁFICAS */}
         <h2 className="text-2xl font-bold">Historial de Balance Hídrico</h2>
 
-        {/* G1 INGRESOS */}
         <div className="grid gap-6 md:grid-cols-2">
           <Card className="border-2">
             <CardHeader>
@@ -424,7 +505,6 @@ export default function PatientDetailPage() {
             </CardContent>
           </Card>
 
-          {/* G2 EGRESOS */}
           <Card className="border-2">
             <CardHeader>
               <CardTitle>Egresos Recientes</CardTitle>
@@ -444,7 +524,6 @@ export default function PatientDetailPage() {
           </Card>
         </div>
 
-        {/* G3 BALANCE HIDRICO (ACUMULADO) */}
         <Card className="border-2">
           <CardHeader>
             <CardTitle>Balance Hídrico Reciente</CardTitle>
@@ -460,7 +539,7 @@ export default function PatientDetailPage() {
                 <Line
                   type="monotone"
                   dataKey="volumen"
-                  stroke="#22c55e" // ← ← ← COLOR ARREGLADO
+                  stroke="#22c55e"
                   strokeWidth={3}
                   dot={{ fill: "#22c55e", r: 4 }}
                   connectNulls

@@ -1,12 +1,12 @@
 "use client"
 
 import { useState } from "react"
+import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -15,144 +15,153 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { TrendingUp } from 'lucide-react'
-import { createClient } from "@/lib/supabase/client"
-import type { CategoriaIngreso, OrigenDato } from "@/lib/types"
 
 interface AgregarIngresoDialogProps {
   pacienteId: number
-  onEventoAgregado: () => void
+  onEventoAgregado: () => void | Promise<void>
 }
 
-const CATEGORIAS_INGRESO: { value: CategoriaIngreso; label: string }[] = [
-  { value: "oral", label: "Líquido oral (agua, jugos, sopas)" },
-  { value: "iv", label: "Intravenoso (IV)" },
-  { value: "enteral", label: "Nutrición enteral (sonda)" },
-  { value: "parenteral", label: "Nutrición parenteral" },
-  { value: "sangre_hemoderivados", label: "Sangre / hemoderivados" },
-  { value: "otros_ingresos", label: "Otros ingresos" },
-]
-
 export function AgregarIngresoDialog({ pacienteId, onEventoAgregado }: AgregarIngresoDialogProps) {
+  const supabase = createClient()
+
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [formData, setFormData] = useState({
-    categoria: "" as CategoriaIngreso,
-    volumen: "",
-    origen: "manual" as OrigenDato,
-    notas: "",
-  })
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const [tipoIngreso, setTipoIngreso] = useState<string>("Vía oral")
+  const [volumen, setVolumen] = useState<string>("")
+  const [origenDato, setOrigenDato] = useState<string>("manual")
+  const [notas, setNotas] = useState<string>("")
+
+  const resetForm = () => {
+    setTipoIngreso("Vía oral")
+    setVolumen("")
+    setOrigenDato("manual")
+    setNotas("")
+  }
+
+  const handleSubmit = async () => {
+    const volumenNumber = Number.parseFloat(volumen)
+
+    if (!volumen || Number.isNaN(volumenNumber) || volumenNumber <= 0) {
+      alert("Por favor ingresa un volumen válido mayor a 0.")
+      return
+    }
+
     setLoading(true)
-
     try {
-      const supabase = createClient()
       const { error } = await supabase.from("eventos_balance").insert({
         paciente_id: pacienteId,
         tipo_movimiento: "ingreso",
-        categoria: formData.categoria,
-        volumen_ml: parseFloat(formData.volumen),
-        origen_dato: formData.origen,
-        notas: formData.notas || null,
+        volumen_ml: volumenNumber,
+        origen_dato: origenDato,
+        descripcion: `${tipoIngreso} - ${notas}`.trim(),
       })
 
-      if (error) throw error
+      if (error) {
+        console.error("[AgregarIngresoDialog] Error al insertar:", error)
+        alert("Error al agregar el ingreso. Por favor intenta de nuevo.")
+        return
+      }
 
-      setFormData({ categoria: "" as CategoriaIngreso, volumen: "", origen: "manual", notas: "" })
+      await onEventoAgregado()
+      resetForm()
       setOpen(false)
-      onEventoAgregado()
-    } catch (error) {
-      console.error("Error al agregar ingreso:", error)
-      alert("Error al agregar el ingreso. Por favor intenta de nuevo.")
+    } catch (e) {
+      console.error("[AgregarIngresoDialog] Error inesperado:", e)
+      alert("Error inesperado al agregar el ingreso.")
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!loading) setOpen(o)
+      }}
+    >
       <DialogTrigger asChild>
-        <Button className="gap-2">
-          <TrendingUp className="h-4 w-4" />
+        <Button variant="default" className="bg-blue-600 hover:bg-blue-700 text-white">
           Agregar Ingreso
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[500px]">
-        <form onSubmit={handleSubmit}>
-          <DialogHeader>
-            <DialogTitle>Registrar Ingreso de Líquidos</DialogTitle>
-            <DialogDescription>Registra la administración de líquidos al paciente.</DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <div className="grid gap-2">
-              <Label htmlFor="categoria">Tipo de ingreso</Label>
-              <Select
-                value={formData.categoria}
-                onValueChange={(value) => setFormData({ ...formData, categoria: value as CategoriaIngreso })}
-                required
-              >
-                <SelectTrigger id="categoria">
-                  <SelectValue placeholder="Selecciona el tipo de ingreso" />
-                </SelectTrigger>
-                <SelectContent>
-                  {CATEGORIAS_INGRESO.map((cat) => (
-                    <SelectItem key={cat.value} value={cat.value}>
-                      {cat.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="volumen">Volumen administrado (mL)</Label>
-              <Input
-                id="volumen"
-                type="number"
-                step="0.1"
-                value={formData.volumen}
-                onChange={(e) => setFormData({ ...formData, volumen: e.target.value })}
-                placeholder="Ej: 500"
-                min="0"
-                required
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="origen">Origen del dato</Label>
-              <Select
-                value={formData.origen}
-                onValueChange={(value) => setFormData({ ...formData, origen: value as OrigenDato })}
-              >
-                <SelectTrigger id="origen">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="manual">Registrado manualmente</SelectItem>
-                  <SelectItem value="sensor">Provenir de sensor de ingreso</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="notas">Notas (opcional)</Label>
-              <Textarea
-                id="notas"
-                value={formData.notas}
-                onChange={(e) => setFormData({ ...formData, notas: e.target.value })}
-                placeholder="Observaciones adicionales..."
-                rows={3}
-              />
-            </div>
+
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Registrar Ingreso de Líquidos</DialogTitle>
+          <DialogDescription>Registra la administración de líquidos al paciente.</DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <Label>Tipo de ingreso</Label>
+            <Select value={tipoIngreso} onValueChange={setTipoIngreso}>
+              <SelectTrigger>
+                <SelectValue placeholder="Selecciona el tipo de ingreso" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Vía oral">Vía oral</SelectItem>
+                <SelectItem value="Soluciones Intravenosas (IV)">Soluciones Intravenosas (IV)</SelectItem>
+                <SelectItem value="Sonda Nasogástrica">Sonda Nasogástrica</SelectItem>
+                <SelectItem value="Nutrición Enteral (NG)">Nutrición Enteral (NG)</SelectItem>
+                <SelectItem value="Nutrición parenteral total (TPN)">Nutrición parenteral total (TPN)</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={loading}>
+
+          <div className="space-y-1">
+            <Label>Volumen administrado (mL)</Label>
+            <Input
+              type="number"
+              min={0}
+              step="0.1"
+              value={volumen}
+              onChange={(e) => setVolumen(e.target.value)}
+              placeholder="Ej. 120"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <Label>Origen del dato</Label>
+            <Select value={origenDato} onValueChange={setOrigenDato}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="manual">Registrado manualmente</SelectItem>
+                <SelectItem value="sensor">Desde sensor / API</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-1">
+            <Label>Notas (opcional)</Label>
+            <Textarea
+              value={notas}
+              onChange={(e) => setNotas(e.target.value)}
+              placeholder="Observaciones adicionales..."
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                if (!loading) {
+                  resetForm()
+                  setOpen(false)
+                }
+              }}
+            >
               Cancelar
             </Button>
-            <Button type="submit" disabled={loading}>
-              {loading ? "Guardando..." : "Registrar Ingreso"}
+            <Button type="button" onClick={handleSubmit} disabled={loading}>
+              {loading ? "Guardando..." : "Guardar"}
             </Button>
-          </DialogFooter>
-        </form>
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   )
