@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, FormEvent } from "react"
+import { useEffect, useState, type FormEvent } from "react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -14,13 +14,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
-} from "@/components/ui/select"
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
 import { createClient } from "@/lib/supabase/client"
 
 interface NuevoPacienteDialogProps {
@@ -48,8 +42,7 @@ export function NuevoPacienteDialog({ onPacienteCreado }: NuevoPacienteDialogPro
   // IMC calculado en vivo
   const pesoNum = Number(peso) || 0
   const tallaNum = Number(talla) || 0
-  const imc =
-    pesoNum > 0 && tallaNum > 0 ? Number((pesoNum / Math.pow(tallaNum / 100, 2)).toFixed(2)) : 0
+  const imc = pesoNum > 0 && tallaNum > 0 ? Number((pesoNum / Math.pow(tallaNum / 100, 2)).toFixed(2)) : 0
 
   // Cargar dispositivos activos para el select
   useEffect(() => {
@@ -93,15 +86,15 @@ export function NuevoPacienteDialog({ onPacienteCreado }: NuevoPacienteDialogPro
       const edadNum = Number(edad) || 0
 
       const { error } = await supabase.from("pacientes").insert({
-        // 👇👇  IMPORTANTE: columnas reales de la tabla
         nombre,
         edad_anios: edadNum,
         peso_kg: pesoNum,
         talla_cm: tallaNum,
         imc,
         sexo,
+        genero: sexo, // También agregar genero para compatibilidad
         dispositivo_id: dispositivoId ? Number(dispositivoId) : null,
-        // created_at se asume con DEFAULT now() en la BD
+        activo: true, // ⚡ IMPORTANTE: Marcar como activo para sincronización automática
       })
 
       if (error) {
@@ -133,19 +126,13 @@ export function NuevoPacienteDialog({ onPacienteCreado }: NuevoPacienteDialogPro
         <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>Registrar Nuevo Paciente</DialogTitle>
-            <DialogDescription>
-              Ingresa los datos del paciente para crear su registro de monitoreo.
-            </DialogDescription>
+            <DialogDescription>Ingresa los datos del paciente para crear su registro de monitoreo.</DialogDescription>
           </DialogHeader>
 
           <div className="mt-4 space-y-4">
             <div className="space-y-2">
               <Label>Nombre del paciente</Label>
-              <Input
-                value={nombre}
-                onChange={(e) => setNombre(e.target.value)}
-                placeholder="Nombre completo"
-              />
+              <Input value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Nombre completo" />
             </div>
 
             <div className="grid gap-4 md:grid-cols-2">
@@ -161,10 +148,7 @@ export function NuevoPacienteDialog({ onPacienteCreado }: NuevoPacienteDialogPro
               </div>
               <div className="space-y-2">
                 <Label>Sexo</Label>
-                <Select
-                  value={sexo}
-                  onValueChange={(v: "M" | "F") => setSexo(v)}
-                >
+                <Select value={sexo} onValueChange={(v: "M" | "F") => setSexo(v)}>
                   <SelectTrigger>
                     <SelectValue placeholder="Selecciona sexo" />
                   </SelectTrigger>
@@ -203,10 +187,7 @@ export function NuevoPacienteDialog({ onPacienteCreado }: NuevoPacienteDialogPro
 
             <div className="space-y-2">
               <Label>Dispositivo de Monitoreo</Label>
-              <Select
-                value={dispositivoId}
-                onValueChange={(v) => setDispositivoId(v)}
-              >
+              <Select value={dispositivoId} onValueChange={(v) => setDispositivoId(v)}>
                 <SelectTrigger>
                   <SelectValue placeholder="Selecciona un dispositivo (opcional)" />
                 </SelectTrigger>
@@ -226,10 +207,7 @@ export function NuevoPacienteDialog({ onPacienteCreado }: NuevoPacienteDialogPro
             </div>
 
             <div className="rounded-md bg-muted px-3 py-2 text-sm">
-              IMC calculado:{" "}
-              <span className="font-semibold">
-                {imc > 0 ? imc.toFixed(2) : "—"}
-              </span>
+              IMC calculado: <span className="font-semibold">{imc > 0 ? imc.toFixed(2) : "—"}</span>
             </div>
           </div>
 

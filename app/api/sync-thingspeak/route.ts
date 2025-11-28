@@ -4,10 +4,12 @@ import { createClient } from "@/lib/supabase/server"
 
 export async function GET() {
   try {
-    console.log("[sync-thingspeak] Iniciando sincronización con ThingSpeak…")
+    console.log("[sync-thingspeak] ========================================")
+    console.log("[sync-thingspeak] Iniciando sincronización con ThingSpeak...")
+    console.log("[sync-thingspeak] ========================================")
     const supabase = await createClient()
 
-    // 1. Cargar dispositivos activos
+    // 1. Dispositivos activos
     const { data: dispositivos, error: dispositivosError } = await supabase
       .from("dispositivos")
       .select("*")
@@ -15,10 +17,7 @@ export async function GET() {
 
     if (dispositivosError) {
       console.error("[sync-thingspeak] Error al cargar dispositivos:", dispositivosError)
-      return NextResponse.json(
-        { error: "Error al cargar dispositivos" },
-        { status: 500 },
-      )
+      return NextResponse.json({ error: "Error al cargar dispositivos" }, { status: 500 })
     }
 
     if (!dispositivos || dispositivos.length === 0) {
@@ -31,13 +30,10 @@ export async function GET() {
 
     let totalProcesados = 0
 
-    // 2. Recorrer cada dispositivo
     for (const dispositivo of dispositivos) {
-      console.log(
-        `[sync-thingspeak] Procesando dispositivo ${dispositivo.nombre} (channel_id=${dispositivo.channel_id})`,
-      )
+      console.log(`[sync-thingspeak] Procesando dispositivo ${dispositivo.nombre} (Channel: ${dispositivo.channel_id})`)
 
-      // Pacientes activos asociados a ese dispositivo
+      // 2. Pacientes activos ligados a este dispositivo
       const { data: pacientes, error: pacientesError } = await supabase
         .from("pacientes")
         .select("*")
@@ -46,22 +42,21 @@ export async function GET() {
 
       if (pacientesError) {
         console.error(
-          `[sync-thingspeak] Error al cargar pacientes para dispositivo ${dispositivo.nombre}:`,
+          `[sync-thingspeak] Error al cargar pacientes del dispositivo ${dispositivo.nombre}:`,
           pacientesError,
         )
         continue
       }
 
       if (!pacientes || pacientes.length === 0) {
-        console.log(
-          `[sync-thingspeak] No hay pacientes activos para el dispositivo ${dispositivo.nombre}`,
-        )
+        console.log(`[sync-thingspeak] No hay pacientes activos asignados al dispositivo ${dispositivo.nombre}`)
         continue
       }
 
-      // Por ahora asumimos 1 paciente por dispositivo
       for (const paciente of pacientes) {
-        // 3. Buscar último entry procesado para ese paciente
+        console.log(`[sync-thingspeak] Paciente asignado: ${paciente.nombre} (id=${paciente.id})`)
+
+        // 3. Último entry_id procesado para este paciente
         const { data: ultimoEvento, error: ultimoError } = await supabase
           .from("eventos_balance")
           .select("thingspeak_entry_id")
@@ -71,16 +66,11 @@ export async function GET() {
           .limit(1)
 
         if (ultimoError) {
-          console.error(
-            `[sync-thingspeak] Error al obtener último entry para paciente ${paciente.id}:`,
-            ultimoError,
-          )
+          console.error("[sync-thingspeak] Error al obtener último entry_id:", ultimoError)
         }
 
         const ultimoEntryId = ultimoEvento?.[0]?.thingspeak_entry_id ?? 0
-        console.log(
-          `[sync-thingspeak] Último entry_id procesado para paciente ${paciente.nombre}: ${ultimoEntryId}`,
-        )
+        console.log(`[sync-thingspeak] Último entry_id procesado para paciente ${paciente.nombre}: ${ultimoEntryId}`)
 
         // 4. Pedir los últimos feeds a ThingSpeak
         const thingspeakUrl = `https://api.thingspeak.com/channels/${dispositivo.channel_id}/feeds.json?api_key=${dispositivo.api_key}&results=100`
@@ -88,84 +78,109 @@ export async function GET() {
 
         const response = await fetch(thingspeakUrl)
         if (!response.ok) {
-          console.error(
-            "[sync-thingspeak] Error al obtener datos de ThingSpeak:",
-            response.status,
-            response.statusText,
-          )
+          console.error("[sync-thingspeak] Error al obtener datos de ThingSpeak:", response.status, response.statusText)
           continue
         }
 
         const json = await response.json()
-        const feeds: any[] = json.feeds ?? []
+        const feeds = json.feeds || []
+        console.log(`[sync-thingspeak] Obtenidos ${feeds.length} registros de ThingSpeak`)
 
-        console.log(
-          `[sync-thingspeak] Feeds recibidos: ${feeds.length}. Last_entry_id canal: ${json.channel?.last_entry_id}`,
-        )
+        // 5. Solo procesar los feeds nuevos (entry_id mayor al último guardado)
+        const nuevosFeeds = feeds.filter((feed: any) => Number(feed.entry_id) > Number(ultimoEntryId))
+        console.log(`[sync-thingspeak] Nuevos registros a procesar: ${nuevosFeeds.length}`)
 
-        // 5. Filtrar solo los feeds nuevos
-        const nuevosFeeds = feeds.filter(
-          (f) => Number(f.entry_id) > Number(ultimoEntryId),
-        )
-
-        console.log(
-          `[sync-thingspeak] Feeds nuevos a procesar para paciente ${paciente.nombre}: ${nuevosFeeds.length}`,
-        )
-
-        // 6. Insertar cada feed como egreso del sensor
         for (const feed of nuevosFeeds) {
           const entryId = Number(feed.entry_id)
-          const createdAt = feed.created_at
+          console.log(`\n[sync-thingspeak] --- Procesando Entry ID: ${entryId} ---`)
+          console.log(`[sync-thingspeak] Timestamp: ${feed.created_at}`)
 
-          // ⚠️ IMPORTANTE:
-          // Usamos field2 (SALIDA) como egreso en mL.
-          // Si quisieras usar field1 como ingreso, aquí se podría agregar.
-          const volumenStr = feed.field2 ?? feed.field1
-          const volumenMl = Number.parseFloat(volumenStr)
+          // --- FIELD1 = ENTRADA (INGRESO) ---
+          const ingresoRaw = feed.field1
+          console.log(`[sync-thingspeak] Lectura field1 (RAW) → "${ingresoRaw}"`)
 
-          if (!Number.isFinite(volumenMl) || volumenMl <= 0) {
-            console.log(
-              `[sync-thingspeak] Saltando entry ${entryId} - volumen inválido: ${volumenStr}`,
-            )
-            continue
+          const ingresoMl = ingresoRaw != null ? Number.parseFloat(ingresoRaw) : Number.NaN
+          console.log(`[sync-thingspeak] Lectura field1 (PARSEADO) → ${ingresoMl}`)
+
+          if (!Number.isNaN(ingresoMl) && ingresoMl > 0) {
+            console.log(`[sync-thingspeak] ✓ Clasificación: INGRESO (field1 > 0)`)
+            console.log(`[sync-thingspeak] Categoría asignada: "Fluido (sensor - entrada)"`)
+            console.log(`[sync-thingspeak] Volumen a insertar: ${ingresoMl} mL`)
+
+            const { error: insertIngresoError } = await supabase.from("eventos_balance").insert({
+              paciente_id: paciente.id,
+              tipo_movimiento: "ingreso",
+              volumen_ml: ingresoMl,
+              categoria: "Fluido (sensor - entrada)",
+              descripcion: `Lectura automática del sensor (entrada) - Entry ID: ${entryId}`,
+              origen_dato: "sensor",
+              timestamp: feed.created_at,
+              thingspeak_entry_id: entryId,
+            })
+
+            if (insertIngresoError) {
+              console.error(`[sync-thingspeak] ✗ Error al insertar ingreso (entry ${entryId}):`, insertIngresoError)
+            } else {
+              console.log(`[sync-thingspeak] ✅ Ingreso insertado en Supabase (entry ${entryId}): ${ingresoMl} mL`)
+              totalProcesados++
+            }
+          } else {
+            const razon = Number.isNaN(ingresoMl) ? "NaN (inválido)" : ingresoMl <= 0 ? "≤ 0 (ignorado)" : "desconocido"
+            console.log(`[sync-thingspeak] ✗ Field1 NO procesado: ${razon}`)
           }
 
-          const { error: insertError } = await supabase.from("eventos_balance").insert({
-            paciente_id: paciente.id,
-            tipo_movimiento: "egreso",
-            volumen_ml: volumenMl,
-            categoria: "Diuresis (orina)",
-            descripcion: `Lectura automática del sensor - Entry ID: ${entryId}`,
-            origen_dato: "sensor",
-            timestamp: createdAt,
-            thingspeak_entry_id: entryId,
-          })
+          // --- FIELD2 = SALIDA (EGRESO) ---
+          const egresoRaw = feed.field2
+          console.log(`[sync-thingspeak] Lectura field2 (RAW) → "${egresoRaw}"`)
 
-          if (insertError) {
-            console.error(
-              `[sync-thingspeak] Error al insertar evento entry_id=${entryId}:`,
-              insertError,
-            )
+          const egresoMl = egresoRaw != null ? Number.parseFloat(egresoRaw) : Number.NaN
+          console.log(`[sync-thingspeak] Lectura field2 (PARSEADO) → ${egresoMl}`)
+
+          if (!Number.isNaN(egresoMl) && egresoMl > 0) {
+            console.log(`[sync-thingspeak] ✓ Clasificación: EGRESO (field2 > 0)`)
+            console.log(`[sync-thingspeak] Categoría asignada: "Diuresis (orina)"`)
+            console.log(`[sync-thingspeak] Volumen a insertar: ${egresoMl} mL`)
+
+            const { error: insertEgresoError } = await supabase.from("eventos_balance").insert({
+              paciente_id: paciente.id,
+              tipo_movimiento: "egreso",
+              volumen_ml: egresoMl,
+              categoria: "Diuresis (orina)", // Corregida categoría para match con componentes
+              descripcion: `Lectura automática del sensor (salida) - Entry ID: ${entryId}`,
+              origen_dato: "sensor",
+              timestamp: feed.created_at,
+              thingspeak_entry_id: entryId,
+            })
+
+            if (insertEgresoError) {
+              console.error(`[sync-thingspeak] ✗ Error al insertar egreso (entry ${entryId}):`, insertEgresoError)
+            } else {
+              console.log(`[sync-thingspeak] ✅ Egreso insertado en Supabase (entry ${entryId}): ${egresoMl} mL`)
+              totalProcesados++
+            }
           } else {
-            console.log(
-              `[sync-thingspeak] ✅ Insertado evento entry_id=${entryId}: ${volumenMl} mL`,
-            )
-            totalProcesados++
+            const razon = Number.isNaN(egresoMl) ? "NaN (inválido)" : egresoMl <= 0 ? "≤ 0 (ignorado)" : "desconocido"
+            console.log(`[sync-thingspeak] ✗ Field2 NO procesado: ${razon}`)
+          }
+
+          // Si en un feed ambos fields vienen 0 o NaN, simplemente se ignora
+          if ((Number.isNaN(ingresoMl) || ingresoMl <= 0) && (Number.isNaN(egresoMl) || egresoMl <= 0)) {
+            console.log(`[sync-thingspeak] ⚠ Entry ${entryId} ignorado completamente (ambos fields inválidos o ≤ 0)`)
           }
         }
       }
     }
 
-    console.log(
-      `[sync-thingspeak] Sincronización completada. Total eventos nuevos: ${totalProcesados}`,
-    )
+    console.log("\n[sync-thingspeak] ========================================")
+    console.log(`[sync-thingspeak] Sincronización completada. Total eventos procesados: ${totalProcesados}`)
+    console.log("[sync-thingspeak] ========================================")
 
     return NextResponse.json({
       message: "Sincronización completada",
       procesados: totalProcesados,
     })
   } catch (error) {
-    console.error("[sync-thingspeak] Error general:", error)
+    console.error("[sync-thingspeak] Error en sincronización ThingSpeak:", error)
     return NextResponse.json({ error: "Error en sincronización" }, { status: 500 })
   }
 }
