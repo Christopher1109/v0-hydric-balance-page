@@ -28,7 +28,6 @@ import { AgregarEgresoDialog } from "@/components/agregar-egreso-dialog"
 import { EliminarPacienteDialog } from "@/components/eliminar-paciente-dialog"
 import type { Paciente, BalanceResumen, ResumenFlujo } from "@/lib/types"
 import {
-  getBalanceStatus,
   calcularIngresosInsensibles,
   calcularEgresosInsensibles,
 } from "@/lib/types"
@@ -141,6 +140,54 @@ function calcularKdigo(
     textColor,
     badgeClass,
     diuresisMlKgH: diuresis,
+  }
+}
+
+// -------- BALANCE HIDRICO: CLASIFICACIÓN POR mL/kg ---------
+
+interface BalanceAlertStatus {
+  label: string
+  textColor: string
+  badgeClass: string
+}
+
+/**
+ * Clasifica el balance hídrico ajustado por peso (mL/kg):
+ * - Neutro: entre -10 y +10 mL/kg
+ * - Riesgo medio: entre ±10 y ±40 mL/kg
+ * - Riesgo alto: ≥ ±40 mL/kg
+ */
+function getBalanceAlertStatus(balanceMlKg: number, hasPeso: boolean): BalanceAlertStatus {
+  if (!hasPeso) {
+    return {
+      label: "No evaluable (sin peso)",
+      textColor: "text-muted-foreground",
+      badgeClass: "bg-gray-200 text-gray-800",
+    }
+  }
+
+  const absVal = Math.abs(balanceMlKg)
+
+  if (absVal <= 10) {
+    return {
+      label: "Balance neutro",
+      textColor: "text-emerald-600",
+      badgeClass: "bg-emerald-100 text-emerald-800",
+    }
+  }
+
+  if (absVal < 40) {
+    return {
+      label: "Riesgo medio",
+      textColor: "text-amber-600",
+      badgeClass: "bg-amber-100 text-amber-800",
+    }
+  }
+
+  return {
+    label: "Riesgo alto",
+    textColor: "text-red-600",
+    badgeClass: "bg-red-100 text-red-800",
   }
 }
 
@@ -411,7 +458,11 @@ export default function PatientDetailPage() {
     balance24h.total_egresos_ml + egresosResumen.despreciables.acumulado
 
   const balanceMostrado = totalIngresosMostrado - totalEgresosMostrado
-  const balanceStatus = getBalanceStatus(balanceMostrado)
+
+  // ========= BALANCE mL/kg Y RANGO CLÍNICO =========
+  const pesoKg = paciente?.peso_kg ?? 0
+  const balanceMlKg = pesoKg > 0 ? balanceMostrado / pesoKg : 0
+  const balanceStatus = getBalanceAlertStatus(balanceMlKg, !!pesoKg)
 
   // ========= KDIGO =========
   let horasObsKdigo = 0
@@ -644,7 +695,14 @@ export default function PatientDetailPage() {
                 {balanceMostrado.toFixed(1)}
               </p>
               <p className="text-sm text-muted-foreground">mililitros (mL)</p>
-              <Badge className="mt-1 px-4 py-1 text-sm" variant="secondary">
+              <p className="text-xs text-muted-foreground">
+                {pesoKg > 0
+                  ? `Balance ajustado: ${balanceMlKg.toFixed(1)} mL/kg`
+                  : "Balance ajustado no disponible (sin peso registrado)"}
+              </p>
+              <Badge
+                className={`mt-1 px-4 py-1 text-sm ${balanceStatus.badgeClass}`}
+              >
                 {balanceStatus.label}
               </Badge>
             </CardContent>

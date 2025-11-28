@@ -6,10 +6,12 @@ export interface Paciente {
   talla_cm: number
   imc: number
   fecha_creacion: string
-  dispositivo_id?: number | null
+  fecha_ultimo_reset?: string | null   // 👈 AGREGA ESTO
+  dispositivo_id: number | null
   ultimo_timestamp_leido?: string | null
-  dispositivo?: Dispositivo | null // Para cuando hacemos JOIN
+  dispositivo?: any | null
 }
+
 
 export type TipoMovimiento = "ingreso" | "egreso"
 
