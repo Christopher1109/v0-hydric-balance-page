@@ -3,35 +3,94 @@
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { User, Settings } from "lucide-react"
+import { User } from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { NuevoPacienteDialog } from "@/components/nuevo-paciente-dialog"
-import { LogoutButton } from "@/components/logout-button"
-import { Button } from "@/components/ui/button"
 import type { Paciente } from "@/lib/types"
-import { getBalanceStatus, calcularIngresosInsensibles, calcularEgresosInsensibles } from "@/lib/types"
+import {
+  calcularIngresosInsensibles,
+  calcularEgresosInsensibles,
+} from "@/lib/types"
 
 interface PatientCardData extends Paciente {
-  balance_total_real: number // ESTE es el mismo "resultado neto acumulado"
+  balance_total_real: number // Resultado neto acumulado (mismo que en patient/[id])
   loading: boolean
+}
+
+// Estado visual para el Lobby (neutro, medio, alto) basado en mL/kg
+interface BalanceAlertStatusLobby {
+  label: string
+  textColor: string
+  cardBgColor: string
+  borderColor: string
+}
+
+// MISMOS RANGOS QUE EN EL EXPEDIENTE (mL/kg):
+// - Neutro: |balance| ≤ 10 mL/kg
+// - Medio: 10 < |balance| < 40 mL/kg
+// - Alto: ≥ 40 mL/kg
+function getBalanceAlertStatusLobby(
+  balanceMlKg: number,
+  hasPeso: boolean,
+): BalanceAlertStatusLobby {
+  if (!hasPeso) {
+    return {
+      label: "No evaluable (sin peso)",
+      textColor: "text-muted-foreground",
+      cardBgColor: "bg-muted",
+      borderColor: "border-muted",
+    }
+  }
+
+  const absVal = Math.abs(balanceMlKg)
+
+  if (absVal <= 10) {
+    // NEUTRO → VERDE
+    return {
+      label: "Balance neutro",
+      textColor: "text-emerald-600",
+      cardBgColor: "bg-emerald-50",
+      borderColor: "border-emerald-300",
+    }
+  }
+
+  if (absVal < 40) {
+    // RIESGO MEDIO → AMARILLO
+    return {
+      label: "Riesgo medio",
+      textColor: "text-amber-600",
+      cardBgColor: "bg-amber-50",
+      borderColor: "border-amber-300",
+    }
+  }
+
+  // RIESGO ALTO → ROJO
+  return {
+    label: "Riesgo alto",
+    textColor: "text-red-600",
+    cardBgColor: "bg-red-50",
+    borderColor: "border-red-300",
+  }
 }
 
 export default function LobbyPage() {
   const [pacientes, setPacientes] = useState<PatientCardData[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [isAdmin, setIsAdmin] = useState(false)
-  const [userEmail, setUserEmail] = useState<string>("")
 
   const supabase = createClient()
 
+  // ------------------------------------------
+  // 1. NORMALIZAR PACIENTES DESDE SUPABASE
+  // ------------------------------------------
   const normalizarPaciente = (p: any): Paciente => {
     const peso = p.peso_kg ?? p.peso ?? 0
     const talla = p.talla_cm ?? p.talla ?? 0
     const edad = p.edad_anios ?? p.edad ?? 0
 
-    const imcCalculado = peso > 0 && talla > 0 ? peso / Math.pow(talla / 100, 2) : 0
+    const imcCalculado =
+      peso > 0 && talla > 0 ? peso / Math.pow(talla / 100, 2) : 0
 
     return {
       id: p.id,
@@ -47,6 +106,10 @@ export default function LobbyPage() {
     }
   }
 
+  // ------------------------------------------
+  // 2. CALCULAR EL MISMO BALANCE QUE EN patient/[id]
+  //    (resultado neto acumulado)
+  // ------------------------------------------
   const calcularBalanceTotalReal = async (paciente: Paciente): Promise<number> => {
     const { data, error } = await supabase
       .from("eventos_balance")
@@ -63,18 +126,39 @@ export default function LobbyPage() {
       return 0
     }
 
-    const ingresosSensorEventos = data.filter((e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "sensor")
-    const ingresosManualEventos = data.filter((e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "manual")
-    const egresosSensorEventos = data.filter((e) => e.tipo_movimiento === "egreso" && e.origen_dato === "sensor")
-    const egresosManualEventos = data.filter((e) => e.tipo_movimiento === "egreso" && e.origen_dato === "manual")
+    // Misma lógica que en PatientDetailPage:
+    const ingresosSensorEventos = data.filter(
+      (e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "sensor",
+    )
+    const ingresosManualEventos = data.filter(
+      (e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "manual",
+    )
+    const egresosSensorEventos = data.filter(
+      (e) => e.tipo_movimiento === "egreso" && e.origen_dato === "sensor",
+    )
+    const egresosManualEventos = data.filter(
+      (e) => e.tipo_movimiento === "egreso" && e.origen_dato === "manual",
+    )
 
-    const ingresos_sensor_total = ingresosSensorEventos.reduce((s, e) => s + e.volumen_ml, 0)
-    const ingresos_manual_total = ingresosManualEventos.reduce((s, e) => s + e.volumen_ml, 0)
+    // Ingresos: sumamos todo (sensor + manual)
+    const ingresos_sensor_total = ingresosSensorEventos.reduce(
+      (s, e) => s + e.volumen_ml,
+      0,
+    )
+    const ingresos_manual_total = ingresosManualEventos.reduce(
+      (s, e) => s + e.volumen_ml,
+      0,
+    )
 
+    // EGRESOS SENSOR: solo el ÚLTIMO valor (no suma de todos)
     const ultimoEgresoSensor = egresosSensorEventos[0]
     const egresos_sensor_total = ultimoEgresoSensor ? ultimoEgresoSensor.volumen_ml : 0
 
-    const egresos_manual_total = egresosManualEventos.reduce((s, e) => s + e.volumen_ml, 0)
+    // EGRESOS MANUAL: estos sí se acumulan
+    const egresos_manual_total = egresosManualEventos.reduce(
+      (s, e) => s + e.volumen_ml,
+      0,
+    )
 
     const total_ingresos_ml = ingresos_sensor_total + ingresos_manual_total
     const total_egresos_ml = egresos_sensor_total + egresos_manual_total
@@ -91,6 +175,7 @@ export default function LobbyPage() {
 
     const balanceMostrado = totalIngresosMostrado - totalEgresosMostrado
 
+    // Para depurar si algo se ve raro
     console.log("[Lobby DEBUG BH]", {
       paciente: paciente.nombre,
       ingresos_sensor_total,
@@ -108,6 +193,9 @@ export default function LobbyPage() {
     return balanceMostrado
   }
 
+  // ------------------------------------------
+  // 3. CARGAR LISTA DE PACIENTES
+  // ------------------------------------------
   const cargarPacientes = async () => {
     setError(null)
     setLoading(true)
@@ -130,8 +218,10 @@ export default function LobbyPage() {
       return
     }
 
+    // Normalizar pacientes
     const normalizados: Paciente[] = data.map(normalizarPaciente)
 
+    // Mostrar de inmediato con balance = 0 mientras calculamos
     const inicial: PatientCardData[] = normalizados.map((p) => ({
       ...p,
       balance_total_real: 0,
@@ -140,6 +230,7 @@ export default function LobbyPage() {
     setPacientes(inicial)
     setLoading(false)
 
+    // Calcular balances reales (mismo neto acumulado que en patient/[id])
     const conBalance: PatientCardData[] = await Promise.all(
       normalizados.map(async (p) => {
         const balanceReal = await calcularBalanceTotalReal(p)
@@ -160,49 +251,27 @@ export default function LobbyPage() {
     return () => clearInterval(interval)
   }, [])
 
-  useEffect(() => {
-    const checkUser = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
-      if (user) {
-        setUserEmail(user.email || "")
-        setIsAdmin(user.email?.includes("admin") || user.user_metadata?.role === "admin")
-      }
-    }
-    checkUser()
-  }, [])
-
   return (
     <div className="min-h-screen bg-background p-4 md:p-8">
       <div className="mx-auto max-w-7xl space-y-6">
-        <div className="flex items-center justify-between flex-wrap gap-4">
+        <div className="flex items-center justify-between">
           <div className="space-y-2">
-            <h1 className="text-3xl font-bold tracking-tight text-foreground">Lobby de Pacientes</h1>
-            <p className="text-muted-foreground">Monitoreo de balance hídrico de múltiples pacientes</p>
-            {userEmail && (
-              <p className="text-sm text-muted-foreground">
-                Usuario: <span className="font-medium">{userEmail}</span>
-              </p>
-            )}
+            <h1 className="text-3xl font-bold tracking-tight text-foreground">
+              Lobby de Pacientes
+            </h1>
+            <p className="text-muted-foreground">
+              Monitoreo de balance hídrico de múltiples pacientes
+            </p>
           </div>
-          <div className="flex items-center gap-2">
-            {isAdmin && (
-              <Link href="/admin/users">
-                <Button variant="outline" size="sm">
-                  <Settings className="mr-2 h-4 w-4" />
-                  Gestionar Usuarios
-                </Button>
-              </Link>
-            )}
-            <NuevoPacienteDialog onPacienteCreado={cargarPacientes} />
-            <LogoutButton />
-          </div>
+          <NuevoPacienteDialog onPacienteCreado={cargarPacientes} />
         </div>
 
+        {/* Errores */}
         {error && (
           <Card className="border-destructive bg-destructive/10">
-            <CardContent className="pt-6 text-destructive">{error}</CardContent>
+            <CardContent className="pt-6 text-destructive">
+              {error}
+            </CardContent>
           </Card>
         )}
 
@@ -214,14 +283,23 @@ export default function LobbyPage() {
           <Card>
             <CardContent className="py-12 text-center">
               <User className="mx-auto mb-4 h-12 w-12 text-muted-foreground" />
-              <p className="mb-4 text-sm text-muted-foreground">No hay pacientes registrados.</p>
+              <p className="mb-4 text-sm text-muted-foreground">
+                No hay pacientes registrados.
+              </p>
               <NuevoPacienteDialog onPacienteCreado={cargarPacientes} />
             </CardContent>
           </Card>
         ) : (
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
             {pacientes.map((paciente) => {
-              const balanceStatus = getBalanceStatus(paciente.balance_total_real)
+              const peso = paciente.peso_kg || 0
+              const balanceMlKg =
+                peso > 0 ? paciente.balance_total_real / peso : 0
+
+              const balanceStatus = getBalanceAlertStatusLobby(
+                balanceMlKg,
+                peso > 0,
+              )
 
               return (
                 <Link key={paciente.id} href={`/patient/${paciente.id}`}>
@@ -240,19 +318,34 @@ export default function LobbyPage() {
                     <CardContent>
                       <div className="text-sm text-muted-foreground">
                         <p>
-                          Edad: <span className="font-medium text-foreground">{paciente.edad_anios}</span> años
+                          Edad:{" "}
+                          <span className="font-medium text-foreground">
+                            {paciente.edad_anios}
+                          </span>{" "}
+                          años
                         </p>
 
                         <p>
-                          Peso: <span className="font-medium text-foreground">{paciente.peso_kg}</span> kg
+                          Peso:{" "}
+                          <span className="font-medium text-foreground">
+                            {paciente.peso_kg}
+                          </span>{" "}
+                          kg
                         </p>
 
                         <p>
-                          Talla: <span className="font-medium text-foreground">{paciente.talla_cm}</span> cm
+                          Talla:{" "}
+                          <span className="font-medium text-foreground">
+                            {paciente.talla_cm}
+                          </span>{" "}
+                          cm
                         </p>
 
                         <p>
-                          IMC: <span className="font-medium text-foreground">{paciente.imc}</span>
+                          IMC:{" "}
+                          <span className="font-medium text-foreground">
+                            {paciente.imc}
+                          </span>
                         </p>
                       </div>
 
@@ -261,8 +354,16 @@ export default function LobbyPage() {
                           Balance total acumulado (mismo de la tarjeta del paciente)
                         </p>
 
-                        <p className={`text-4xl font-bold ${balanceStatus.textColor}`}>
+                        <p
+                          className={`text-4xl font-bold ${balanceStatus.textColor}`}
+                        >
                           {paciente.balance_total_real.toFixed(1)}
+                        </p>
+
+                        <p className="text-xs text-muted-foreground">
+                          {peso > 0
+                            ? `Balance ajustado: ${balanceMlKg.toFixed(1)} mL/kg`
+                            : "Balance ajustado no disponible (sin peso registrado)"}
                         </p>
 
                         <Badge className="mt-1" variant="secondary">
