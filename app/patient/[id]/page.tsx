@@ -215,149 +215,169 @@ export default function PatientDetailPage() {
 
   // --------- CARGAR PACIENTE ---------
   const cargarDatosPaciente = async () => {
-    const { data, error } = await supabase
-      .from("pacientes")
-      .select(`*, dispositivo:dispositivos(*)`)
-      .eq("id", patienteId)
-      .single()
+    try {
+      const { data, error } = await supabase
+        .from("pacientes")
+        .select(`*, dispositivo:dispositivos(*)`)
+        .eq("id", patienteId)
+        .single()
 
-    if (error) {
-      console.error("Error al cargar paciente:", error)
-      return
+      if (error) {
+        console.error("[patient] Error Supabase al cargar paciente:", error)
+        return
+      }
+
+      if (!data) {
+        console.warn("[patient] No se encontró datos de paciente en Supabase")
+        return
+      }
+
+      const peso = data.peso_kg ?? data.peso ?? 0
+      const talla = data.talla_cm ?? data.talla ?? 0
+      const edad = data.edad_anios ?? data.edad ?? 0
+      const imc =
+        peso > 0 && talla > 0 ? Number((peso / Math.pow(talla / 100, 2)).toFixed(2)) : 0
+
+      const pacienteNormalizado: Paciente = {
+        id: data.id,
+        nombre: data.nombre,
+        edad_anios: edad,
+        peso_kg: peso,
+        talla_cm: talla,
+        imc,
+        fecha_creacion: data.created_at ?? "",
+        dispositivo_id: data.dispositivo_id ?? null,
+        ultimo_timestamp_leido: data.ultimo_timestamp_leido ?? null,
+        dispositivo: data.dispositivo ?? null,
+      }
+
+      setPaciente(pacienteNormalizado)
+    } catch (err) {
+      console.error(
+        "[patient] Error inesperado al cargar paciente (no JSON válido):",
+        err,
+      )
     }
-
-    if (!data) return
-
-    const peso = data.peso_kg ?? data.peso ?? 0
-    const talla = data.talla_cm ?? data.talla ?? 0
-    const edad = data.edad_anios ?? data.edad ?? 0
-    const imc =
-      peso > 0 && talla > 0 ? Number((peso / Math.pow(talla / 100, 2)).toFixed(2)) : 0
-
-    const pacienteNormalizado: Paciente = {
-      id: data.id,
-      nombre: data.nombre,
-      edad_anios: edad,
-      peso_kg: peso,
-      talla_cm: talla,
-      imc,
-      fecha_creacion: data.created_at ?? "",
-      dispositivo_id: data.dispositivo_id ?? null,
-      ultimo_timestamp_leido: data.ultimo_timestamp_leido ?? null,
-      dispositivo: data.dispositivo ?? null,
-    }
-
-    setPaciente(pacienteNormalizado)
   }
 
   // --------- CALCULAR BALANCE (solo eventos) ---------
   const calcularBalance = async () => {
-    const { data, error } = await supabase
-      .from("eventos_balance")
-      .select("tipo_movimiento, volumen_ml, origen_dato, timestamp")
-      .eq("paciente_id", patienteId)
-      .order("timestamp", { ascending: false })
+    try {
+      const { data, error } = await supabase
+        .from("eventos_balance")
+        .select("tipo_movimiento, volumen_ml, origen_dato, timestamp")
+        .eq("paciente_id", patienteId)
+        .order("timestamp", { ascending: false })
 
-    if (error || !data) {
-      console.error("Error al calcular balance:", error)
-      return
+      if (error || !data) {
+        console.error("Error al calcular balance:", error)
+        return
+      }
+
+      const ingresosSensorEventos = data.filter(
+        (e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "sensor",
+      )
+      const ingresosManualEventos = data.filter(
+        (e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "manual",
+      )
+      const egresosSensorEventos = data.filter(
+        (e) => e.tipo_movimiento === "egreso" && e.origen_dato === "sensor",
+      )
+      const egresosManualEventos = data.filter(
+        (e) => e.tipo_movimiento === "egreso" && e.origen_dato === "manual",
+      )
+
+      // 🔵 Ingresos: se siguen acumulando (sensor + manual)
+      const ingresos_sensor_total = ingresosSensorEventos.reduce(
+        (s, e) => s + e.volumen_ml,
+        0,
+      )
+      const ingresos_manual_total = ingresosManualEventos.reduce(
+        (s, e) => s + e.volumen_ml,
+        0,
+      )
+
+      // 🟠 EGRESOS SENSOR: SOLO TOMAMOS EL ÚLTIMO VALOR (NO SUMAMOS TODO)
+      const ultimoEgresoSensor = egresosSensorEventos[0]
+      const egresos_sensor_total = ultimoEgresoSensor ? ultimoEgresoSensor.volumen_ml : 0
+
+      // 🟠 EGRESOS MANUAL: estos sí se acumulan (bolos, etc.)
+      const egresos_manual_total = egresosManualEventos.reduce(
+        (s, e) => s + e.volumen_ml,
+        0,
+      )
+
+      const ultimoIngresoSensor = ingresosSensorEventos[0]
+      const ultimoIngresoManual = ingresosManualEventos[0]
+      const ultimoEgresoManual = egresosManualEventos[0]
+
+      const total_ingresos = ingresos_sensor_total + ingresos_manual_total
+      const total_egresos = egresos_sensor_total + egresos_manual_total
+
+      setBalance24h({
+        total_ingresos_ml: total_ingresos,
+        total_egresos_ml: total_egresos,
+        balance_ml: total_ingresos - total_egresos,
+        ingresos_sensor: ultimoIngresoSensor?.volumen_ml || 0,
+        ingresos_manual: ultimoIngresoManual?.volumen_ml || 0,
+        egresos_sensor: ultimoEgresoSensor?.volumen_ml || 0,
+        egresos_manual: ultimoEgresoManual?.volumen_ml || 0,
+      })
+
+      console.log("[patient] Totales sensor:", {
+        ingresos_sensor_total,
+        egresos_sensor_total,
+      })
+    } catch (err) {
+      console.error("[patient] Error inesperado al calcular balance:", err)
     }
-
-    const ingresosSensorEventos = data.filter(
-      (e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "sensor",
-    )
-    const ingresosManualEventos = data.filter(
-      (e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "manual",
-    )
-    const egresosSensorEventos = data.filter(
-      (e) => e.tipo_movimiento === "egreso" && e.origen_dato === "sensor",
-    )
-    const egresosManualEventos = data.filter(
-      (e) => e.tipo_movimiento === "egreso" && e.origen_dato === "manual",
-    )
-
-    const ingresos_sensor_total = ingresosSensorEventos.reduce(
-      (s, e) => s + e.volumen_ml,
-      0,
-    )
-    const ingresos_manual_total = ingresosManualEventos.reduce(
-      (s, e) => s + e.volumen_ml,
-      0,
-    )
-    const egresos_sensor_total = egresosSensorEventos.reduce(
-      (s, e) => s + e.volumen_ml,
-      0,
-    )
-    const egresos_manual_total = egresosManualEventos.reduce(
-      (s, e) => s + e.volumen_ml,
-      0,
-    )
-
-    const ultimoIngresoSensor = ingresosSensorEventos[0]
-    const ultimoIngresoManual = ingresosManualEventos[0]
-    const ultimoEgresoSensor = egresosSensorEventos[0]
-    const ultimoEgresoManual = egresosManualEventos[0]
-
-    const total_ingresos = ingresos_sensor_total + ingresos_manual_total
-    const total_egresos = egresos_sensor_total + egresos_manual_total
-
-    setBalance24h({
-      total_ingresos_ml: total_ingresos,
-      total_egresos_ml: total_egresos,
-      balance_ml: total_ingresos - total_egresos,
-      ingresos_sensor: ultimoIngresoSensor?.volumen_ml || 0,
-      ingresos_manual: ultimoIngresoManual?.volumen_ml || 0,
-      egresos_sensor: ultimoEgresoSensor?.volumen_ml || 0,
-      egresos_manual: ultimoEgresoManual?.volumen_ml || 0,
-    })
-
-    console.log("[patient] Totales sensor:", {
-      ingresos_sensor_total,
-      egresos_sensor_total,
-    })
   }
 
   // --------- DATOS PARA GRÁFICAS ---------
   const cargarDatosGrafica = async () => {
-    const { data, error } = await supabase
-      .from("eventos_balance")
-      .select("tipo_movimiento, volumen_ml, timestamp")
-      .eq("paciente_id", patienteId)
-      .order("timestamp", { ascending: true })
+    try {
+      const { data, error } = await supabase
+        .from("eventos_balance")
+        .select("tipo_movimiento, volumen_ml, timestamp")
+        .eq("paciente_id", patienteId)
+        .order("timestamp", { ascending: true })
 
-    if (error || !data) {
-      console.error("Error al cargar datos de gráfica:", error)
-      return
-    }
-
-    const datosIngresos: ChartData[] = []
-    const datosEgresos: ChartData[] = []
-    const datosBalance: ChartData[] = []
-
-    let balanceAcumulado = 0
-
-    data.forEach((e) => {
-      const fecha = new Date(e.timestamp)
-      const timeKey = fecha.toLocaleTimeString("es-ES", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      })
-
-      if (e.tipo_movimiento === "ingreso") {
-        datosIngresos.push({ time: timeKey, volumen: e.volumen_ml })
-        balanceAcumulado += e.volumen_ml
-      } else {
-        datosEgresos.push({ time: timeKey, volumen: -e.volumen_ml })
-        balanceAcumulado -= e.volumen_ml
+      if (error || !data) {
+        console.error("Error al cargar datos de gráfica:", error)
+        return
       }
 
-      datosBalance.push({ time: timeKey, volumen: balanceAcumulado })
-    })
+      const datosIngresos: ChartData[] = []
+      const datosEgresos: ChartData[] = []
+      const datosBalance: ChartData[] = []
 
-    setChartDataIngresos(datosIngresos.slice(-5))
-    setChartDataEgresos(datosEgresos.slice(-5))
-    setChartDataBalance(datosBalance.slice(-20))
+      let balanceAcumulado = 0
+
+      data.forEach((e) => {
+        const fecha = new Date(e.timestamp)
+        const timeKey = fecha.toLocaleTimeString("es-ES", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        })
+
+        if (e.tipo_movimiento === "ingreso") {
+          datosIngresos.push({ time: timeKey, volumen: e.volumen_ml })
+          balanceAcumulado += e.volumen_ml
+        } else {
+          datosEgresos.push({ time: timeKey, volumen: -e.volumen_ml })
+          balanceAcumulado -= e.volumen_ml
+        }
+
+        datosBalance.push({ time: timeKey, volumen: balanceAcumulado })
+      })
+
+      setChartDataIngresos(datosIngresos.slice(-5))
+      setChartDataEgresos(datosEgresos.slice(-5))
+      setChartDataBalance(datosBalance.slice(-20))
+    } catch (err) {
+      console.error("[patient] Error inesperado al cargar datos de gráfica:", err)
+    }
   }
 
   // --------- THINGSPEAK ---------
@@ -374,22 +394,47 @@ export default function PatientDetailPage() {
 
   const actualizarTodo = async () => {
     setLoading(true)
-    await sincronizarThingSpeak()
-    await Promise.all([cargarDatosPaciente(), calcularBalance(), cargarDatosGrafica()])
+
+    try {
+      await sincronizarThingSpeak()
+    } catch (err) {
+      console.error("[patient] Error al sincronizar ThingSpeak:", err)
+    }
+
+    try {
+      await Promise.all([cargarDatosPaciente(), calcularBalance(), cargarDatosGrafica()])
+    } catch (err) {
+      console.error("[patient] Error al actualizar datos del paciente:", err)
+    }
+
     setLastUpdate(new Date())
     setLoading(false)
   }
 
+  // 🔴 REINICIAR BALANCE: BORRA EVENTOS + ESTADO KDIGO PARA ESTE PACIENTE
   const reiniciarBalance = async () => {
-    if (!confirm("¿Seguro que deseas reiniciar el balance?")) return
-    await supabase.from("eventos_balance").delete().eq("paciente_id", patienteId)
-    await actualizarTodo()
+    if (
+      !confirm(
+        "¿Seguro que deseas reiniciar el balance? Esto borrará los datos actuales.",
+      )
+    ) {
+      return
+    }
+
+    try {
+      await supabase.from("eventos_balance").delete().eq("paciente_id", patienteId)
+      await supabase.from("kdigo_estado_actual").delete().eq("paciente_id", patienteId)
+      await actualizarTodo()
+    } catch (err) {
+      console.error("[patient] Error al reiniciar balance:", err)
+    }
   }
 
   useEffect(() => {
     actualizarTodo()
-    const interval = setInterval(actualizarTodo, 15000)
+    const interval = setInterval(actualizarTodo, 30000) // 30 segundos
     return () => clearInterval(interval)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [patienteId])
 
   if (!paciente && !loading) {
@@ -422,7 +467,6 @@ export default function PatientDetailPage() {
     egresosDespreciables = calcularEgresosInsensibles(paciente.peso_kg, horas)
   }
 
-  // Totales “reales” de eventos
   const ingresos_sensor_total_real =
     balance24h.total_ingresos_ml - (balance24h.ingresos_manual || 0)
   const egresos_sensor_total_real =
@@ -481,15 +525,19 @@ export default function PatientDetailPage() {
   useEffect(() => {
     const guardarKdigo = async () => {
       if (!paciente) return
-      await supabase.from("kdigo_estado_actual").upsert({
-        paciente_id: paciente.id,
-        updated_at: new Date().toISOString(),
-        horas_observadas: horasObsKdigo,
-        egresos_totales_ml: totalEgresosMostrado,
-        diuresis_ml_kg_h: kdigo.diuresisMlKgH,
-        estadio: kdigo.stage,
-        etiqueta: kdigo.label,
-      })
+      try {
+        await supabase.from("kdigo_estado_actual").upsert({
+          paciente_id: paciente.id,
+          updated_at: new Date().toISOString(),
+          horas_observadas: horasObsKdigo,
+          egresos_totales_ml: totalEgresosMostrado,
+          diuresis_ml_kg_h: kdigo.diuresisMlKgH,
+          estadio: kdigo.stage,
+          etiqueta: kdigo.label,
+        })
+      } catch (err) {
+        console.error("[patient] Error al guardar KDIGO:", err)
+      }
     }
 
     if (paciente) {
@@ -644,10 +692,10 @@ export default function PatientDetailPage() {
 
               <div className="space-y-2 border-t pt-3 text-sm">
                 <p className="font-semibold text-muted-foreground">
-                  SENSOR (total)
+                  SENSOR (último valor)
                 </p>
                 <div className="flex justify-between">
-                  <span>Último / Volumen acumulado</span>
+                  <span>Último / Volumen tomado</span>
                   <span className="font-bold">
                     {egresosResumen.sensor.ultimo.toFixed(1)} mL /{" "}
                     {egresosResumen.sensor.total.toFixed(1)} mL
