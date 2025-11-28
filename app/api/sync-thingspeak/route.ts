@@ -7,6 +7,7 @@ export async function GET() {
     console.log("[sync-thingspeak] ========================================")
     console.log("[sync-thingspeak] Iniciando sincronización con ThingSpeak...")
     console.log("[sync-thingspeak] ========================================")
+
     const supabase = await createClient()
 
     // 1. Dispositivos activos
@@ -77,12 +78,36 @@ export async function GET() {
         console.log("[sync-thingspeak] URL:", thingspeakUrl)
 
         const response = await fetch(thingspeakUrl)
+
         if (!response.ok) {
-          console.error("[sync-thingspeak] Error al obtener datos de ThingSpeak:", response.status, response.statusText)
+          console.error(
+            `[sync-thingspeak] Error HTTP ${response.status} al obtener datos de ThingSpeak:`,
+            response.statusText,
+          )
+
+          // Intentar leer el cuerpo como texto para diagnosticar
+          const errorBody = await response.text()
+          console.error(`[sync-thingspeak] Respuesta de error: ${errorBody}`)
+
+          // Si es un error 429 (Too Many Requests), esperar y continuar
+          if (response.status === 429) {
+            console.warn("[sync-thingspeak] ⚠ Rate limit alcanzado en ThingSpeak. Se omite esta sincronización.")
+          }
+
           continue
         }
 
-        const json = await response.json()
+        // Intentar parsear JSON de forma segura
+        let json
+        try {
+          const text = await response.text()
+          json = JSON.parse(text)
+        } catch (parseError) {
+          console.error("[sync-thingspeak] Error al parsear respuesta JSON:", parseError)
+          console.error("[sync-thingspeak] Respuesta recibida:", await response.text())
+          continue
+        }
+
         const feeds = json.feeds || []
         console.log(`[sync-thingspeak] Obtenidos ${feeds.length} registros de ThingSpeak`)
 
@@ -94,6 +119,17 @@ export async function GET() {
           const entryId = Number(feed.entry_id)
           console.log(`\n[sync-thingspeak] --- Procesando Entry ID: ${entryId} ---`)
           console.log(`[sync-thingspeak] Timestamp: ${feed.created_at}`)
+
+          const { data: pacienteExiste } = await supabase
+            .from("pacientes")
+            .select("id")
+            .eq("id", paciente.id)
+            .maybeSingle()
+
+          if (!pacienteExiste) {
+            console.warn(`[sync-thingspeak] ⚠ Paciente ${paciente.id} ya no existe. Se detiene procesamiento de feeds.`)
+            break // Salir del loop de feeds
+          }
 
           // --- FIELD1 = ENTRADA (INGRESO) ---
           const ingresoRaw = feed.field1
@@ -119,7 +155,10 @@ export async function GET() {
             })
 
             if (insertIngresoError) {
-              console.error(`[sync-thingspeak] ✗ Error al insertar ingreso (entry ${entryId}):`, insertIngresoError)
+              console.error(
+                `[sync-thingspeak] ✗ Error al insertar ingreso (entry ${entryId}):`,
+                insertIngresoError.message,
+              )
             } else {
               console.log(`[sync-thingspeak] ✅ Ingreso insertado en Supabase (entry ${entryId}): ${ingresoMl} mL`)
               totalProcesados++
@@ -145,7 +184,7 @@ export async function GET() {
               paciente_id: paciente.id,
               tipo_movimiento: "egreso",
               volumen_ml: egresoMl,
-              categoria: "Diuresis (orina)", // Corregida categoría para match con componentes
+              categoria: "Diuresis (orina)",
               descripcion: `Lectura automática del sensor (salida) - Entry ID: ${entryId}`,
               origen_dato: "sensor",
               timestamp: feed.created_at,
@@ -153,7 +192,10 @@ export async function GET() {
             })
 
             if (insertEgresoError) {
-              console.error(`[sync-thingspeak] ✗ Error al insertar egreso (entry ${entryId}):`, insertEgresoError)
+              console.error(
+                `[sync-thingspeak] ✗ Error al insertar egreso (entry ${entryId}):`,
+                insertEgresoError.message,
+              )
             } else {
               console.log(`[sync-thingspeak] ✅ Egreso insertado en Supabase (entry ${entryId}): ${egresoMl} mL`)
               totalProcesados++
@@ -163,7 +205,6 @@ export async function GET() {
             console.log(`[sync-thingspeak] ✗ Field2 NO procesado: ${razon}`)
           }
 
-          // Si en un feed ambos fields vienen 0 o NaN, simplemente se ignora
           if ((Number.isNaN(ingresoMl) || ingresoMl <= 0) && (Number.isNaN(egresoMl) || egresoMl <= 0)) {
             console.log(`[sync-thingspeak] ⚠ Entry ${entryId} ignorado completamente (ambos fields inválidos o ≤ 0)`)
           }

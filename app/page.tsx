@@ -15,7 +15,7 @@ import {
 } from "@/lib/types"
 
 interface PatientCardData extends Paciente {
-  balance_total_real: number   // ESTE es el mismo "resultado neto acumulado"
+  balance_total_real: number // ESTE es el mismo "resultado neto acumulado"
   loading: boolean
 }
 
@@ -58,8 +58,9 @@ export default function LobbyPage() {
   const calcularBalanceTotalReal = async (paciente: Paciente): Promise<number> => {
     const { data, error } = await supabase
       .from("eventos_balance")
-      .select("tipo_movimiento, volumen_ml")
+      .select("tipo_movimiento, volumen_ml, origen_dato, timestamp")
       .eq("paciente_id", paciente.id)
+      .order("timestamp", { ascending: false })
 
     if (error) {
       console.error("[Lobby] Error al calcular balance:", error)
@@ -70,33 +71,63 @@ export default function LobbyPage() {
       return 0
     }
 
-    const ingresosEventos = data
-      .filter((e) => e.tipo_movimiento === "ingreso")
-      .reduce((sum, e) => sum + e.volumen_ml, 0)
+    // Replicamos EXACTAMENTE la lógica de patient/[id]:
 
-    const egresosEventos = data
-      .filter((e) => e.tipo_movimiento === "egreso")
-      .reduce((sum, e) => sum + e.volumen_ml, 0)
+    const ingresosSensorEventos = data.filter(
+      (e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "sensor",
+    )
+    const ingresosManualEventos = data.filter(
+      (e) => e.tipo_movimiento === "ingreso" && e.origen_dato === "manual",
+    )
+    const egresosSensorEventos = data.filter(
+      (e) => e.tipo_movimiento === "egreso" && e.origen_dato === "sensor",
+    )
+    const egresosManualEventos = data.filter(
+      (e) => e.tipo_movimiento === "egreso" && e.origen_dato === "manual",
+    )
 
-    const hayEventos = ingresosEventos !== 0 || egresosEventos !== 0
-    const horas = hayEventos ? 1 : 0   // 🔁 mismo supuesto simple que en patient/[id]
+    // Ingresos: sumamos todo (sensor + manual)
+    const ingresos_sensor_total = ingresosSensorEventos.reduce(
+      (s, e) => s + e.volumen_ml,
+      0,
+    )
+    const ingresos_manual_total = ingresosManualEventos.reduce(
+      (s, e) => s + e.volumen_ml,
+      0,
+    )
+
+    // EGRESOS SENSOR: solo el ÚLTIMO valor (no suma de todos)
+    const ultimoEgresoSensor = egresosSensorEventos[0]
+    const egresos_sensor_total = ultimoEgresoSensor ? ultimoEgresoSensor.volumen_ml : 0
+
+    // EGRESOS MANUAL: estos sí se acumulan
+    const egresos_manual_total = egresosManualEventos.reduce(
+      (s, e) => s + e.volumen_ml,
+      0,
+    )
+
+    const total_ingresos_ml = ingresos_sensor_total + ingresos_manual_total
+    const total_egresos_ml = egresos_sensor_total + egresos_manual_total
+
+    const hayEventos = total_ingresos_ml !== 0 || total_egresos_ml !== 0
+    const horas = hayEventos ? 1 : 0
     const peso = paciente.peso_kg || 0
 
     const ingresosIns = calcularIngresosInsensibles(peso, horas)
     const egresosIns = calcularEgresosInsensibles(peso, horas)
 
-    const totalIngresosMostrado =
-      ingresosEventos + ingresosIns.acumulado
-    const totalEgresosMostrado =
-      egresosEventos + egresosIns.acumulado
+    const totalIngresosMostrado = total_ingresos_ml + ingresosIns.acumulado
+    const totalEgresosMostrado = total_egresos_ml + egresosIns.acumulado
 
     const balanceMostrado = totalIngresosMostrado - totalEgresosMostrado
 
     // Para depurar si algo se ve raro
     console.log("[Lobby DEBUG BH]", {
       paciente: paciente.nombre,
-      ingresosEventos,
-      egresosEventos,
+      ingresos_sensor_total,
+      ingresos_manual_total,
+      egresos_sensor_total,
+      egresos_manual_total,
       horas,
       ingresosIns: ingresosIns.acumulado,
       egresosIns: egresosIns.acumulado,
