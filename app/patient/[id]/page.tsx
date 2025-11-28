@@ -10,6 +10,17 @@ import {
 } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 import { Droplets, TrendingDown, TrendingUp, ArrowLeft, User } from "lucide-react"
 import Link from "next/link"
 import { useParams } from "next/navigation"
@@ -413,14 +424,6 @@ export default function PatientDetailPage() {
 
   // 🔴 REINICIAR BALANCE: BORRA EVENTOS + ESTADO KDIGO PARA ESTE PACIENTE
   const reiniciarBalance = async () => {
-    if (
-      !confirm(
-        "¿Seguro que deseas reiniciar el balance? Esto borrará los datos actuales.",
-      )
-    ) {
-      return
-    }
-
     try {
       await supabase.from("eventos_balance").delete().eq("paciente_id", patienteId)
       await supabase.from("kdigo_estado_actual").delete().eq("paciente_id", patienteId)
@@ -792,9 +795,35 @@ export default function PatientDetailPage() {
         <div className="flex gap-3">
           <AgregarIngresoDialog pacienteId={patienteId} onEventoAgregado={actualizarTodo} />
           <AgregarEgresoDialog pacienteId={patienteId} onEventoAgregado={actualizarTodo} />
-          <Button variant="destructive" onClick={reiniciarBalance} disabled={loading}>
-            Reiniciar Balance
-          </Button>
+
+          {/* Dialog interno para reiniciar balance */}
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="destructive" disabled={loading}>
+                Reiniciar Balance
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Reiniciar balance</AlertDialogTitle>
+                <AlertDialogDescription>
+                  ¿Seguro que deseas reiniciar el balance de este paciente? Esta acción
+                  eliminará todos los eventos de ingresos y egresos registrados y no se
+                  puede deshacer.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => {
+                    void reiniciarBalance()
+                  }}
+                >
+                  Sí, reiniciar
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
 
         {/* GRÁFICAS */}
